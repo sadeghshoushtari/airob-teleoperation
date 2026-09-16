@@ -1,0 +1,19 @@
+# Compiled programs
+master
+slave
+mastero
+slaveo
+
+# Experimental logs
+*.csv
+*.log
+
+# Vendor/runtime libraries
+*.so
+
+# Build folders
+build/
+cmake-build-*/
+
+# VS Code cache files
+.vscode/.browse.VC.db*
