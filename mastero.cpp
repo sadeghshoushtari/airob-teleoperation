@@ -174,7 +174,6 @@ constexpr bool kEnableDirectionalForceDamping =
 constexpr bool kEnableDirectionalTorqueDamping =
     true;
 
-
 // ------------------------------------------------------------
 // WRENCH REFLECTION
 //
@@ -188,7 +187,6 @@ constexpr bool kEnableForceReflection =
 constexpr bool kEnableTorqueReflection =
     true;
 
-
 // ============================================================
 // BACKWARD POSITION COUPLING
 //
@@ -198,11 +196,10 @@ constexpr bool kEnableTorqueReflection =
 // ============================================================
 
 constexpr double kBackwardPositionStiffness =
-    100.0;                       // N/m
+    10.0;                       // N/m
 
 constexpr double kBackwardPositionDamping =
-    20.0;                         // Ns/m
-
+    1.0;                         // Ns/m
 
 // ============================================================
 // BACKWARD ROTATION COUPLING
@@ -216,8 +213,7 @@ constexpr double kBackwardRotationStiffness =
     1.0;                         // Nm/rad
 
 constexpr double kBackwardRotationDamping =
-    0.12;                        // Nms/rad
-
+    0.05;                        // Nms/rad
 
 // ------------------------------------------------------------
 // BACKWARD SYNCHRONIZATION ERROR LIMITS
@@ -229,12 +225,20 @@ constexpr double kMaxBackwardPositionErrorM =
 constexpr double kMaxBackwardRotationErrorDeg =
     30.0;                        // deg
 
+constexpr double kMinBackwardRotationErrorDeg =
+    5.0;    
+
 constexpr double kMaxBackwardRotationErrorRad =
 
     kMaxBackwardRotationErrorDeg *
     kPi /
     180.0;
 
+constexpr double kMinBackwardRotationErrorRad =
+
+    kMinBackwardRotationErrorDeg *
+    kPi /
+    180.0;
 
 // ============================================================
 // SELECTIVE DIRECTIONAL DAMPING
@@ -265,16 +269,16 @@ constexpr double kMaxBackwardRotationErrorRad =
 // ============================================================
 
 constexpr double kDirectionalLinearDamping =
-    5.0;                         // Ns/m
+    1.0;                         // Ns/m
 
 constexpr double kDirectionalAngularDamping =
-    0.10;                        // Nms/rad
+    0.5;                        // Nms/rad
 
 constexpr double kDirectionalForceThresholdN =
-    1.0;                         // N
+    0.5;                         // N
 
 constexpr double kDirectionalTorqueThresholdNm =
-    1.0;                        // Nm
+    0.1;                        // Nm
 
 
 // ============================================================
@@ -287,10 +291,10 @@ constexpr double kDirectionalTorqueThresholdNm =
 // ============================================================
 
 constexpr double kForceReflectionGain =
-    1;
+    0.6;
 
 constexpr double kTorqueReflectionGain =
-    0.25;
+    0.1;
 
 
 // ------------------------------------------------------------
@@ -333,10 +337,10 @@ constexpr double kMaxTorqueStepNm =
 // ------------------------------------------------------------
 
 constexpr double kForceFilterAlpha =
-    0.133974596216;
+    0.8;
 
 constexpr double kTorqueFilterAlpha =
-    0.1339746;
+    0.5;
 
 
 // ------------------------------------------------------------
@@ -3040,7 +3044,7 @@ int main() {
                 virtuose_orientation,
 
                 target_virtuose_orientation);
-
+	
 
         sync_rotation_error =
 
@@ -3050,17 +3054,18 @@ int main() {
 
                 kMaxBackwardRotationErrorRad);
 
+	if(sync_rotation_error.norm() > kMinBackwardRotationErrorRad){
+		sync_torque =
 
-        sync_torque =
+		    kBackwardRotationStiffness *
+		        sync_rotation_error +
 
-            kBackwardRotationStiffness *
-                sync_rotation_error +
+		    kBackwardRotationDamping *
 
-            kBackwardRotationDamping *
-
-                (
-                    franka_angular_velocity_mapped -
-                    virtuose_angular_velocity);
+		        (
+		            franka_angular_velocity_mapped -
+		            virtuose_angular_velocity);
+        }
       }
     }
 
@@ -3217,8 +3222,7 @@ int main() {
 
         parallel_angular_velocity =
 
-            torque_direction *
-
+		torque_direction * 
             virtuose_angular_velocity.dot(
                 torque_direction);
 
@@ -4369,5 +4373,6 @@ int main() {
 
   return 0;
 }
+
 
 

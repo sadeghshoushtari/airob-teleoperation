@@ -162,7 +162,7 @@ constexpr double kBaselineTranslationalStiffness =
     500.0;
 
 constexpr double kBaselineTranslationalDamping =
-    45.0; // was 45
+    20.0; // was 45
 
 constexpr double kMaximumStiffnessRate =
     200.0;
@@ -173,10 +173,10 @@ constexpr double kMaximumStiffnessRate =
 // ------------------------------------------------------------
 
 constexpr double kRotationalStiffness =
-    12.0;
+    80.0;
 
 constexpr double kRotationalDamping =
-    4.0;
+    0.5;
 
 
 // ------------------------------------------------------------
@@ -269,6 +269,17 @@ constexpr double kMaxDeltaTorquePerCycleNm =
 
 constexpr double kMinimumCallbackDtS =
     0.0005;
+
+
+// ------------------------------------------------------------
+// SLAVE FEEDBACK WRENCH LOW-PASS FILTER
+// Same first-order filter used on the master side.
+// ------------------------------------------------------------
+constexpr double kForceFilterAlpha =
+    0.7;
+
+constexpr double kTorqueFilterAlpha =
+    0.7;
 
 
 // ------------------------------------------------------------
@@ -1754,6 +1765,14 @@ int main(
     uint64_t feedback_id =
         0;
 
+    std::array<double, 3> filtered_feedback_force{0.0, 0.0, 0.0};
+    std::array<double, 3> filtered_feedback_torque{0.0, 0.0, 0.0};
+    Eigen::Vector3d prev_master_position(0, 0, 0);
+    
+    double prev_command[7]{};
+	
+
+
 
     // ========================================================
     // FRANKA 1 kHz CALLBACK
@@ -1904,16 +1923,20 @@ int main(
           // --------------------------------------------------
 
           for (std::size_t i = 0;
-               i < 6;
+               i < 3;
                ++i) {
 
-            feedback_packet[
-                2 + i]
-                .store(
+            filtered_feedback_force[i] = state.O_F_ext_hat_K[i];
 
-                    state.O_F_ext_hat_K[i],
+            filtered_feedback_torque[i] = state.O_F_ext_hat_K[3 + i];
 
-                    std::memory_order_relaxed);
+            feedback_packet[2 + i].store(
+                filtered_feedback_force[i],
+                std::memory_order_relaxed);
+
+            feedback_packet[5 + i].store(
+                filtered_feedback_torque[i],
+                std::memory_order_relaxed);
           }
 
 
@@ -2092,7 +2115,7 @@ int main(
           // ==================================================
 
           static double alpha_received =
-              0.50;
+              0.80;
 
 
           if (packet_live &&
@@ -2199,7 +2222,7 @@ int main(
           // MASTER POSE
           // ==================================================
 
-          const Eigen::Vector3d
+          Eigen::Vector3d
               master_position(
 
                   command[6],
@@ -2209,13 +2232,16 @@ int main(
 
           Eigen::Quaterniond
               master_orientation(
-
-                  command[2],
-                  command[3],
-                  command[4],
-                  command[5]);
-
-
+                  0.95 * command[2] + 0.05 * prev_command[3],
+                  0.95 * command[3] + 0.05 * prev_command[4],
+                  0.95 * command[4] + 0.05 * prev_command[5],
+                  0.95 * command[5] + 0.05 * prev_command[6]);
+                  
+          prev_command[3] = master_orientation.w();
+          prev_command[4] = master_orientation.x();
+          prev_command[5] = master_orientation.y();
+          prev_command[6] = master_orientation.z();
+          
           const bool valid_master_pose =
 
               finite_vector3(
@@ -2226,7 +2252,8 @@ int main(
 
 
           if (valid_master_pose) {
-
+	    master_position = 0.99 * master_position + 0.01 * prev_master_position;
+	    prev_master_position = master_position;
             master_orientation.normalize();
           }
 
@@ -3209,5 +3236,6 @@ int main(
 
   return 0;
 }
+
 
 
