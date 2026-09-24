@@ -241,7 +241,7 @@ constexpr double kMaximumBackwardRotationStiffness =
     1.5;                         // Nm/rad
 
 constexpr double kBaselineBackwardRotationDamping =
-    0.05;                        // Nms/rad at K = 1 Nm/rad
+    0.15;                        // Nms/rad at K = 1 Nm/rad
 
 constexpr double kMaximumBackwardRotationStiffnessRate =
     0.5;                         // Nm/rad/s -> 0.5...1.5 in ~2 s
@@ -257,7 +257,7 @@ constexpr double kMaxBackwardRotationErrorDeg =
     30.0;                        // deg
 
 constexpr double kMinBackwardRotationErrorDeg =
-    5.0;    
+    2.0;     //was 5
 
 constexpr double kMaxBackwardRotationErrorRad =
 
@@ -325,7 +325,7 @@ constexpr double kForceReflectionGain =
     0.6;
 
 constexpr double kTorqueReflectionGain =
-    0.1;
+    0.30;
 
 
 // ------------------------------------------------------------
@@ -471,6 +471,10 @@ constexpr std::size_t kLogQueueCapacity =
 
 constexpr uint64_t kLogFlushRows =
     1000;
+
+// CSV logging only. Controller and UDP remain at 1 kHz.
+constexpr uint64_t kLogDecimation =
+    10;                          // 1 kHz / 10 = 100 Hz CSV
 
 constexpr int kConsolePrintEveryCycles =
     200;
@@ -4340,12 +4344,15 @@ int main() {
         set_force_rc;
 
 
-    if (!log_queue.push(
-            s)) {
+    // Decimate CSV only. Control, sensing, UDP and haptic rendering stay at 1 kHz.
+    if ((packet_id % kLogDecimation) == 0) {
+      if (!log_queue.push(
+              s)) {
 
-      dropped_samples.fetch_add(
-          1,
-          std::memory_order_relaxed);
+        dropped_samples.fetch_add(
+            1,
+            std::memory_order_relaxed);
+      }
     }
 
 
@@ -4598,7 +4605,3 @@ int main() {
 
   return 0;
 }
-
-
-
-

@@ -372,6 +372,10 @@ constexpr std::size_t kLogQueueCapacity =
 constexpr uint64_t kLogFlushRows =
     1000;
 
+// CSV logging only. Franka control and UDP feedback remain at 1 kHz.
+constexpr uint64_t kLogDecimation =
+    10;                          // 1 kHz / 10 = 100 Hz CSV
+
 
 // ============================================================
 // STOP FLAG
@@ -1786,6 +1790,9 @@ int main(
 
 
     uint64_t feedback_id =
+        0;
+
+    uint64_t log_decimation_counter =
         0;
 
     std::array<double, 3> filtered_feedback_force{0.0, 0.0, 0.0};
@@ -3206,13 +3213,17 @@ int main(
                   : 0;
 
 
-          if (!log_queue.push(
-                  s)) {
+          // Decimate CSV only. The 1 kHz Franka callback and UDP feedback are untouched.
+          if ((log_decimation_counter % kLogDecimation) == 0) {
+            if (!log_queue.push(
+                    s)) {
 
-            dropped_samples.fetch_add(
-                1,
-                std::memory_order_relaxed);
+              dropped_samples.fetch_add(
+                  1,
+                  std::memory_order_relaxed);
+            }
           }
+          ++log_decimation_counter;
 
 
           // ==================================================
@@ -3307,7 +3318,3 @@ int main(
 
   return 0;
 }
-
-
-
-
