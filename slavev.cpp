@@ -97,93 +97,11 @@
 #include "teleop_common.hpp"
 #include "teleop_math.hpp"
 #include "slave_config.hpp"
+#include "teleop_runtime.hpp"
+#include "slave_control_utils.hpp"
 
 
-namespace {
 
-// ============================================================
-// STOP FLAG
-// ============================================================
-
-volatile std::sig_atomic_t
-    g_stop_requested = 0;
-
-
-void sigint_handler(int) {
-
-  g_stop_requested =
-      1;
-}
-
-
-// ============================================================
-// HELPERS
-// ============================================================
-
-uint64_t now_ns() {
-
-  return static_cast<uint64_t>(
-
-      std::chrono::duration_cast<
-          std::chrono::nanoseconds>(
-
-          std::chrono::steady_clock::now()
-              .time_since_epoch())
-
-          .count());
-}
-
-
-// ============================================================
-// TORQUE RATE LIMIT
-// ============================================================
-
-std::array<double, 7>
-saturate_torque_rate(
-
-    const Eigen::Matrix<
-        double,
-        7,
-        1>& calculated,
-
-    const std::array<
-        double,
-        7>& previous_desired) {
-
-
-  std::array<double, 7>
-      result{};
-
-
-  for (std::size_t i = 0;
-       i < 7;
-       ++i) {
-
-    const double delta =
-
-        calculated[
-            static_cast<int>(
-                i)] -
-
-        previous_desired[i];
-
-
-    result[i] =
-
-        previous_desired[i] +
-
-        clamp_scalar(
-            delta,
-            -kMaxDeltaTorquePerCycleNm,
-            kMaxDeltaTorquePerCycleNm);
-  }
-
-
-  return result;
-}
-
-
-}  // namespace
 
 
 // ============================================================
