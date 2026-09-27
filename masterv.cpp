@@ -95,6 +95,7 @@
 
 #include "virtuoseAPI.h"
 #include "teleop_common.hpp"
+#include "teleop_math.hpp"
 #include "master_config.hpp"
 
 
@@ -121,42 +122,6 @@ void sigint_handler(int) {
 // ============================================================
 // HELPERS
 // ============================================================
-
-double rate_limit(
-    double target,
-    double previous,
-    double maximum_step) {
-
-  return previous +
-
-         clamp_scalar(
-             target - previous,
-             -maximum_step,
-             maximum_step);
-}
-
-
-double norm3(
-    const double value[3]) {
-
-  return std::sqrt(
-
-      value[0] * value[0] +
-      value[1] * value[1] +
-      value[2] * value[2]);
-}
-
-
-bool finite3(
-    const Eigen::Vector3d& value) {
-
-  return
-
-      std::isfinite(value.x()) &&
-      std::isfinite(value.y()) &&
-      std::isfinite(value.z());
-}
-
 
 double normalize_analogue_trigger(
     double raw_value) {
@@ -214,79 +179,6 @@ double elapsed_us(
              start)
 
       .count();
-}
-
-
-Eigen::Vector3d clamp_vector_norm(
-    const Eigen::Vector3d& value,
-    double maximum_norm) {
-
-  const double magnitude =
-      value.norm();
-
-
-  if (magnitude <=
-          maximum_norm ||
-
-      magnitude <
-          1e-12) {
-
-    return value;
-  }
-
-
-  return
-
-      value *
-
-      (
-          maximum_norm /
-          magnitude);
-}
-
-
-// ------------------------------------------------------------
-// World-frame rotation vector taking current -> target
-// ------------------------------------------------------------
-
-Eigen::Vector3d orientation_error_world(
-    const Eigen::Quaterniond& current_input,
-    const Eigen::Quaterniond& target_input) {
-
-  const Eigen::Quaterniond current =
-      current_input.normalized();
-
-
-  const Eigen::Quaterniond target =
-      target_input.normalized();
-
-
-  const Eigen::Matrix3d relative_rotation =
-
-      target.toRotationMatrix() *
-
-      current.toRotationMatrix().transpose();
-
-
-  Eigen::AngleAxisd aa(
-      relative_rotation);
-
-
-  if (!std::isfinite(
-          aa.angle()) ||
-
-      aa.angle() <
-          1e-12) {
-
-    return Eigen::Vector3d::
-        Zero();
-  }
-
-
-  return
-
-      aa.axis() *
-      aa.angle();
 }
 
 
@@ -1380,10 +1272,10 @@ int main() {
 
         rc_physical_pose == 0 &&
         rc_physical_speed == 0 &&
-        finite3(physical_position) &&
+        finite_vector3(physical_position) &&
         finite_quaternion(physical_orientation) &&
-        finite3(physical_linear_velocity) &&
-        finite3(physical_angular_velocity);
+        finite_vector3(physical_linear_velocity) &&
+        finite_vector3(physical_angular_velocity);
 
 
     // ========================================================
@@ -1524,16 +1416,16 @@ int main() {
 
         feedback_live &&
 
-        finite3(
+        finite_vector3(
             franka_position) &&
 
         finite_quaternion(
             franka_orientation) &&
 
-        finite3(
+        finite_vector3(
             franka_linear_velocity) &&
 
-        finite3(
+        finite_vector3(
             franka_angular_velocity);
 
 
@@ -1709,7 +1601,7 @@ int main() {
 
         bias_ready &&
 
-        finite3(
+        finite_vector3(
             force_mapped);
 
 
@@ -1717,7 +1609,7 @@ int main() {
 
         bias_ready &&
 
-        finite3(
+        finite_vector3(
             torque_mapped);
 
 
@@ -1735,16 +1627,16 @@ int main() {
 
         franka_pose_valid &&
 
-        finite3(
+        finite_vector3(
             virtuose_position) &&
 
         finite_quaternion(
             virtuose_orientation) &&
 
-        finite3(
+        finite_vector3(
             virtuose_linear_velocity) &&
 
-        finite3(
+        finite_vector3(
             virtuose_angular_velocity) &&
 
         deadman_release_seen &&
