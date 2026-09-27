@@ -94,6 +94,7 @@
 #include <franka/robot.h>
 
 #include "examples_common.h"
+#include "teleop_common.hpp"
 
 
 namespace {
@@ -101,34 +102,6 @@ namespace {
 // ============================================================
 // CONFIGURATION
 // ============================================================
-
-
-// ------------------------------------------------------------
-// MATHEMATICAL CONSTANTS
-// ------------------------------------------------------------
-
-constexpr double kPi =
-    3.14159265358979323846;
-
-
-// ------------------------------------------------------------
-// NETWORK
-// ------------------------------------------------------------
-
-constexpr int kCommandReceivePort =
-    11056;
-
-constexpr int kFeedbackSendPort =
-    11055;
-
-constexpr const char* kFeedbackDestinationIp =
-    "127.0.0.1";
-
-constexpr std::size_t kCommandPacketSize =
-    14;
-
-constexpr std::size_t kFeedbackPacketSize =
-    23;
 
 
 // ------------------------------------------------------------
@@ -297,20 +270,6 @@ constexpr double kTorqueFilterAlpha =
 
 
 // ------------------------------------------------------------
-// MASTER -> FRANKA FRAME MAP
-//
-// Experimentally verified identity mapping.
-// ------------------------------------------------------------
-
-constexpr std::array<double, 9>
-    kVirtuoseToFranka = {
-
-        1.0, 0.0, 0.0,
-        0.0, 1.0, 0.0,
-        0.0, 0.0, 1.0};
-
-
-// ------------------------------------------------------------
 // FRANKA INITIAL CONFIGURATION
 // ------------------------------------------------------------
 
@@ -392,19 +351,6 @@ uint64_t now_ns() {
 }
 
 
-double clamp_scalar(
-    double x,
-    double lo,
-    double hi) {
-
-  return std::max(
-      lo,
-      std::min(
-          x,
-          hi));
-}
-
-
 bool finite_vector3(
     const Eigen::Vector3d& v) {
 
@@ -413,21 +359,6 @@ bool finite_vector3(
       std::isfinite(v.x()) &&
       std::isfinite(v.y()) &&
       std::isfinite(v.z());
-}
-
-
-bool finite_quaternion(
-    const Eigen::Quaterniond& q) {
-
-  return
-
-      std::isfinite(q.w()) &&
-      std::isfinite(q.x()) &&
-      std::isfinite(q.y()) &&
-      std::isfinite(q.z()) &&
-
-      q.squaredNorm() >
-          1e-10;
 }
 
 
@@ -451,27 +382,6 @@ Eigen::Vector3d clamp_components(
           value.z(),
           -limit,
           limit));
-}
-
-
-Eigen::Matrix3d create_frame_map() {
-
-  Eigen::Matrix3d R;
-
-  R <<
-      kVirtuoseToFranka[0],
-      kVirtuoseToFranka[1],
-      kVirtuoseToFranka[2],
-
-      kVirtuoseToFranka[3],
-      kVirtuoseToFranka[4],
-      kVirtuoseToFranka[5],
-
-      kVirtuoseToFranka[6],
-      kVirtuoseToFranka[7],
-      kVirtuoseToFranka[8];
-
-  return R;
 }
 
 

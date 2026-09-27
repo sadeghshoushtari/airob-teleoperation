@@ -94,6 +94,7 @@
 #include <Eigen/Geometry>
 
 #include "virtuoseAPI.h"
+#include "teleop_common.hpp"
 
 
 namespace {
@@ -101,34 +102,6 @@ namespace {
 // ============================================================
 // CONFIGURATION
 // ============================================================
-
-
-// ------------------------------------------------------------
-// MATHEMATICAL CONSTANTS
-// ------------------------------------------------------------
-
-constexpr double kPi =
-    3.14159265358979323846;
-
-
-// ------------------------------------------------------------
-// NETWORK
-// ------------------------------------------------------------
-
-constexpr const char* kSlaveIp =
-    "127.0.0.1";
-
-constexpr int kCommandSendPort =
-    11056;
-
-constexpr int kFeedbackReceivePort =
-    11055;
-
-constexpr std::size_t kCommandPacketSize =
-    14;
-
-constexpr std::size_t kFeedbackPacketSize =
-    23;
 
 
 // ------------------------------------------------------------
@@ -400,20 +373,6 @@ constexpr float kVirtuoseSpeedFactor =
 
 
 // ------------------------------------------------------------
-// VIRTUOSE -> FRANKA FRAME MAP
-//
-// Experimentally verified identity mapping.
-// ------------------------------------------------------------
-
-constexpr std::array<double, 9>
-    kVirtuoseToFranka = {
-
-        1.0, 0.0, 0.0,
-        0.0, 1.0, 0.0,
-        0.0, 0.0, 1.0};
-
-
-// ------------------------------------------------------------
 // ANALOGUE-GRIPPER 6-DOF STIFFNESS INPUT
 // ------------------------------------------------------------
 // Haption documents the finger trigger as a passive 0-100% analogue input.
@@ -487,19 +446,6 @@ void sigint_handler(int) {
 // HELPERS
 // ============================================================
 
-double clamp_scalar(
-    double value,
-    double lower,
-    double upper) {
-
-  return std::max(
-      lower,
-      std::min(
-          value,
-          upper));
-}
-
-
 double rate_limit(
     double target,
     double previous,
@@ -533,21 +479,6 @@ bool finite3(
       std::isfinite(value.x()) &&
       std::isfinite(value.y()) &&
       std::isfinite(value.z());
-}
-
-
-bool finite_quaternion(
-    const Eigen::Quaterniond& q) {
-
-  return
-
-      std::isfinite(q.w()) &&
-      std::isfinite(q.x()) &&
-      std::isfinite(q.y()) &&
-      std::isfinite(q.z()) &&
-
-      q.squaredNorm() >
-          1e-10;
 }
 
 
@@ -607,27 +538,6 @@ double elapsed_us(
              start)
 
       .count();
-}
-
-
-Eigen::Matrix3d create_frame_map() {
-
-  Eigen::Matrix3d R;
-
-  R <<
-      kVirtuoseToFranka[0],
-      kVirtuoseToFranka[1],
-      kVirtuoseToFranka[2],
-
-      kVirtuoseToFranka[3],
-      kVirtuoseToFranka[4],
-      kVirtuoseToFranka[5],
-
-      kVirtuoseToFranka[6],
-      kVirtuoseToFranka[7],
-      kVirtuoseToFranka[8];
-
-  return R;
 }
 
 
