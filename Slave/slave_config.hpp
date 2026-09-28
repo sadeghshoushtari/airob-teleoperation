@@ -6,6 +6,7 @@
 #include "teleop_common.hpp"
 
 namespace {
+
 // ------------------------------------------------------------
 // COMMUNICATION
 // ------------------------------------------------------------
@@ -44,13 +45,9 @@ constexpr double kMaximumTranslationalStiffness =
 constexpr double kMaximumStiffnessRate =
     200.0;                       // N/m/s
 
-
 // ------------------------------------------------------------
 // VARIABLE ROTATIONAL IMPEDANCE
 // ------------------------------------------------------------
-// The same normalized analogue command used for Ktrans is mapped to Krot.
-// To stay conservative, full press reaches the previously fixed 80 Nm/rad
-// rather than exceeding it.
 
 constexpr double kMinimumRotationalStiffness =
     40.0;                        // Nm/rad
@@ -67,7 +64,6 @@ constexpr double kBaselineRotationalDamping =
 constexpr double kMaximumRotationalStiffnessRate =
     20.0;                        // Nm/rad/s -> 40 Nm/rad sweep in 2 s
 
-
 // ------------------------------------------------------------
 // FORWARD ENABLES
 // ------------------------------------------------------------
@@ -77,7 +73,6 @@ constexpr bool kEnableTranslationFollowing =
 
 constexpr bool kEnableRotationFollowing =
     true;
-
 
 // ------------------------------------------------------------
 // FORWARD SCALE
@@ -91,7 +86,6 @@ constexpr double kPositionScaleY =
 
 constexpr double kPositionScaleZ =
     1.0;
-
 
 // ------------------------------------------------------------
 // FORWARD WORKSPACE
@@ -108,7 +102,6 @@ constexpr double kMaxRelativeRotationRad =
     kPi /
     180.0;
 
-
 // ------------------------------------------------------------
 // FORWARD TARGET RATE
 // ------------------------------------------------------------
@@ -124,7 +117,6 @@ constexpr double kMaxDesiredAngularSpeedRadps =
     kPi /
     180.0;
 
-
 // ------------------------------------------------------------
 // NULLSPACE
 // ------------------------------------------------------------
@@ -135,14 +127,12 @@ constexpr double kNullspaceStiffness =
 constexpr double kNullspaceDamping =
     2.5; //was 2.5
 
-
 // ------------------------------------------------------------
 // DAMPED LEAST SQUARES
 // ------------------------------------------------------------
 
 constexpr double kDampedInverseLambda =
     0.05;
-
 
 // ------------------------------------------------------------
 // JOINT TORQUE RATE
@@ -151,7 +141,6 @@ constexpr double kDampedInverseLambda =
 constexpr double kMaxDeltaTorquePerCycleNm =
     1.0;
 
-
 // ------------------------------------------------------------
 // CALLBACK DT SANITY
 // ------------------------------------------------------------
@@ -159,17 +148,15 @@ constexpr double kMaxDeltaTorquePerCycleNm =
 constexpr double kMinimumCallbackDtS =
     0.0005;
 
-
 // ------------------------------------------------------------
 // SLAVE FEEDBACK WRENCH LOW-PASS FILTER
-// Same first-order filter used on the master side.
 // ------------------------------------------------------------
+
 constexpr double kForceFilterAlpha =
     0.7;
 
 constexpr double kTorqueFilterAlpha =
     0.7;
-
 
 // ------------------------------------------------------------
 // FRANKA INITIAL CONFIGURATION
@@ -200,20 +187,8 @@ constexpr std::array<double, 7>
 constexpr double kInitialMotionSpeedFactor =
     0.35;
 
-
 // ------------------------------------------------------------
 // COLLISION THRESHOLD
-//
-// Joint arrays contain 7 entries.
-// Cartesian wrench arrays contain 6 entries.
-//
-// This matches the installed libfranka 4-argument overload:
-//
-// setCollisionBehavior(
-//     array<double,7>,
-//     array<double,7>,
-//     array<double,6>,
-//     array<double,6>)
 // ------------------------------------------------------------
 
 constexpr double kCollisionThreshold =

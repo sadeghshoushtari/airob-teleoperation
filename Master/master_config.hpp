@@ -3,6 +3,7 @@
 #include "teleop_common.hpp"
 
 namespace {
+    
 // ------------------------------------------------------------
 // CONTROL RATE / TIMING
 // ------------------------------------------------------------
@@ -21,8 +22,6 @@ constexpr float kVirtuoseApiTimeoutS =
 // BACKWARD CONTROL SWITCHES
 // ============================================================
 
-// Full 6-DoF backward pose coupling is now verified.
-
 constexpr bool kEnableBackwardPositionCoupling =
     true;
 
@@ -32,20 +31,6 @@ constexpr bool kEnableBackwardRotationCoupling =
 
 // ------------------------------------------------------------
 // DIRECTIONAL DAMPING
-//
-// Independent from force/torque reflection.
-//
-// Translation:
-//   project Virtuose linear velocity onto Franka external-force
-//   direction, then oppose only that projected motion.
-//
-// Rotation:
-//   project Virtuose angular velocity onto Franka external-torque
-//   direction, then oppose only that projected motion.
-//
-// IMPORTANT:
-//   Force [N] and torque [Nm] are NOT combined into one normalized
-//   6-D wrench, unlike the reference implementation.
 // ------------------------------------------------------------
 
 constexpr bool kEnableDirectionalForceDamping =
@@ -56,9 +41,6 @@ constexpr bool kEnableDirectionalTorqueDamping =
 
 // ------------------------------------------------------------
 // WRENCH REFLECTION
-//
-// Reflection is a separate additive haptic term. These switches
-// do not enable/disable directional damping.
 // ------------------------------------------------------------
 
 constexpr bool kEnableForceReflection =
@@ -69,14 +51,8 @@ constexpr bool kEnableTorqueReflection =
 
 // ============================================================
 // BACKWARD POSITION COUPLING
-//
-// Fsync = Kb * (x_target - x_V)
-//       + Db * (v_target - v_V)
-//
 // ============================================================
 
-// Variable master-side virtual translational impedance.
-// Damping scales with sqrt(K/K0) around the previously used nominal point.
 constexpr double kMinimumBackwardPositionStiffness =
     5.0;                         // N/m
 
@@ -94,10 +70,6 @@ constexpr double kMaximumBackwardPositionStiffnessRate =
 
 // ============================================================
 // BACKWARD ROTATION COUPLING
-//
-// Msync = Kr * rotation_error
-//       + Dr * (w_target - w_V)
-//
 // ============================================================
 
 constexpr double kMinimumBackwardRotationStiffness =
@@ -142,30 +114,6 @@ constexpr double kMinBackwardRotationErrorRad =
 
 // ============================================================
 // SELECTIVE DIRECTIONAL DAMPING
-//
-// Translation:
-//
-//   nF        = F / ||F||
-//   v_parallel = (v_V . nF) nF
-//   Fd        = -bF v_parallel
-//
-//   Pd_lin = Fd . v_V
-//          = -bF ||v_parallel||^2
-//          <= 0
-//
-// Rotation:
-//
-//   nM         = M / ||M||
-//   w_parallel = (w_V . nM) nM
-//   Md         = -bM w_parallel
-//
-//   Pd_rot = Md . w_V
-//          = -bM ||w_parallel||^2
-//          <= 0
-//
-// Translation and rotation are kept dimensionally separate.
-// The measured wrench is used only to define the damping axis;
-// wrench reflection remains an independent additive term.
 // ============================================================
 
 constexpr double kDirectionalLinearDamping =
@@ -180,14 +128,8 @@ constexpr double kDirectionalForceThresholdN =
 constexpr double kDirectionalTorqueThresholdNm =
     0.1;                        // Nm
 
-
 // ============================================================
 // WRENCH REFLECTION
-//
-// Currently disabled.
-//
-// F_V = -gF * F_F
-// M_V = -gM * M_F
 // ============================================================
 
 constexpr double kForceReflectionGain =
@@ -196,21 +138,16 @@ constexpr double kForceReflectionGain =
 constexpr double kTorqueReflectionGain =
     0.30;
 
-
 // ------------------------------------------------------------
 // VIRTUOSE SOFTWARE/API SATURATION
 // ------------------------------------------------------------
 
-// Haption VIRTUOSE 6D TAO HF published ratings.
-// Peak ratings are documented here but are NOT held continuously.
 constexpr double kDevicePeakForceN =
     70.0;
 
 constexpr double kDevicePeakTorqueNm =
     5.0;
 
-// Persistent software/API ceilings use the published continuous
-// ratings, because the command may remain saturated indefinitely.
 constexpr double kDeviceForceCeilingN =
     30.0;
 
@@ -219,7 +156,6 @@ constexpr double kDeviceTorqueCeilingNm =
 
 constexpr double kNearCeilingFraction =
     0.90;
-
 
 // ------------------------------------------------------------
 // COMMAND SLEW LIMITS
@@ -231,7 +167,6 @@ constexpr double kMaxForceStepN =
 constexpr double kMaxTorqueStepNm =
     0.010;                       // Nm/cycle @ 1 kHz
 
-
 // ------------------------------------------------------------
 // COMMAND LOW-PASS FILTERS
 // ------------------------------------------------------------
@@ -242,23 +177,12 @@ constexpr double kForceFilterAlpha =
 constexpr double kTorqueFilterAlpha =
     0.5;
 
-
-// ------------------------------------------------------------
-// FRANKA WRENCH VALIDITY
-//
-// There is deliberately NO magnitude-triggered dropout here.
-// A finite debiased wrench remains usable; the final command sent
-// to the Virtuose is saturated to the continuous device ceiling.
-// ------------------------------------------------------------
-
-
 // ------------------------------------------------------------
 // STARTUP WRENCH BIAS
 // ------------------------------------------------------------
 
 constexpr int kBiasSamplesRequired =
     500;
-
 
 // ------------------------------------------------------------
 // VIRTUOSE API SCALING
@@ -270,23 +194,8 @@ constexpr float kVirtuoseForceFactor =
 constexpr float kVirtuoseSpeedFactor =
     1.0f;
 
-
 // ------------------------------------------------------------
-// ANALOGUE-GRIPPER 6-DOF STIFFNESS INPUT
-// ------------------------------------------------------------
-// Haption documents the finger trigger as a passive 0-100% analogue input.
-// The API channel is kept as one explicit constant so it is trivial to change
-// if this device exposes the trigger on a different analogue[] index.
-//
-// Released / very lightly pressed  -> minimum translational + rotational stiffness
-// Fully pressed                    -> maximum translational + rotational stiffness
-//
-// The same normalized trigger command u in [0,1] drives both:
-//   Ktrans = 300 .. 700 N/m
-//   Krot   = 40  .. 80  Nm/rad
-//
-// The same trigger also drives the master-side virtual spring/damper
-// through independent master gain ranges defined above.
+// ANALOGUE-GRIPPER STIFFNESS INPUT
 // ------------------------------------------------------------
 
 constexpr std::size_t kStiffnessAnalogChannel =

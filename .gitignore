@@ -17,3 +17,7 @@ cmake-build-*/
 
 # VS Code cache files
 .vscode/.browse.VC.db*
+
+# Local build executables
+Master/masterv
+Slave/slavev
