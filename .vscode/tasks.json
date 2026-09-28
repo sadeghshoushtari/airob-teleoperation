@@ -2,7 +2,7 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Build Current Master",
+            "label": "Build Master Refactored",
             "type": "shell",
             "command": "g++",
             "args": [
@@ -10,22 +10,28 @@
                 "-O2",
                 "-Wall",
                 "-Wextra",
-                "master.cpp",
+                "masterv.cpp",
                 "-I.",
                 "-I/usr/include/eigen3",
                 "./virtuoseAPI.so",
-                "-Wl,-rpath,${workspaceFolder}",
+                "-Wl,-rpath,${workspaceFolder}/Master",
                 "-o",
-                "master",
+                "masterv",
                 "-pthread"
             ],
             "options": {
-                "cwd": "${workspaceFolder}"
+                "cwd": "${workspaceFolder}/Master"
             },
-            "problemMatcher": "$gcc"
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": false
+            }
         },
         {
-            "label": "Build Current Slave",
+            "label": "Build Slave Refactored",
             "type": "shell",
             "command": "g++",
             "args": [
@@ -33,95 +39,37 @@
                 "-O2",
                 "-Wall",
                 "-Wextra",
-                "slave.cpp",
+                "slavev.cpp",
                 "examples_common.cpp",
-                "-o",
-                "slave",
-                "-lfranka",
+                "-I.",
                 "-I/usr/include/eigen3",
+                "-o",
+                "slavev",
+                "-lfranka",
                 "-pthread"
             ],
             "options": {
-                "cwd": "${workspaceFolder}"
+                "cwd": "${workspaceFolder}/Slave"
             },
-            "problemMatcher": "$gcc"
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": false
+            }
         },
         {
-            "label": "Build Current Pair",
+            "label": "Build Refactored Master and Slave",
             "dependsOn": [
-                "Build Current Master",
-                "Build Current Slave"
+                "Build Master Refactored",
+                "Build Slave Refactored"
             ],
             "dependsOrder": "sequence",
             "group": {
                 "kind": "build",
                 "isDefault": true
             },
-            "problemMatcher": []
-        },
-
-        {
-            "label": "Build Baseline Master",
-            "type": "shell",
-            "command": "g++",
-            "args": [
-                "-std=c++17",
-                "-O2",
-                "-Wall",
-                "-Wextra",
-                "mastero.cpp",
-                "-I.",
-                "-I/usr/include/eigen3",
-                "./virtuoseAPI.so",
-                "-Wl,-rpath,${workspaceFolder}",
-                "-o",
-                "mastero",
-                "-pthread"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "problemMatcher": "$gcc"
-        },
-        {
-            "label": "Build Baseline Slave",
-            "type": "shell",
-            "command": "g++",
-            "args": [
-                "-std=c++17",
-                "-O2",
-                "-Wall",
-                "-Wextra",
-                "slaveo.cpp",
-                "examples_common.cpp",
-                "-o",
-                "slaveo",
-                "-lfranka",
-                "-I/usr/include/eigen3",
-                "-pthread"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "problemMatcher": "$gcc"
-        },
-        {
-            "label": "Build Baseline Pair",
-            "dependsOn": [
-                "Build Baseline Master",
-                "Build Baseline Slave"
-            ],
-            "dependsOrder": "sequence",
-            "problemMatcher": []
-        },
-
-        {
-            "label": "Build Everything",
-            "dependsOn": [
-                "Build Current Pair",
-                "Build Baseline Pair"
-            ],
-            "dependsOrder": "sequence",
             "problemMatcher": []
         }
     ]
