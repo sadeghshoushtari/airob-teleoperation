@@ -6,12 +6,9 @@
 #include "teleop_math.hpp"
 #include "virtuoseAPI.h"
 
-inline double normalize_analogue_trigger(
-    double raw_value) {
-
+inline double normalize_analogue_trigger(double raw_value) {
   const double denominator =
-      kAnalogFullyPressedValue -
-      kAnalogReleasedValue;
+      kAnalogFullyPressedValue - kAnalogReleasedValue;
 
   if (!std::isfinite(raw_value) ||
       std::abs(denominator) < 1e-12) {
@@ -19,11 +16,8 @@ inline double normalize_analogue_trigger(
   }
 
   double normalized =
-      (raw_value - kAnalogReleasedValue) /
-      denominator;
-
-  normalized =
-      clamp_scalar(normalized, 0.0, 1.0);
+      (raw_value - kAnalogReleasedValue) / denominator;
+  normalized = clamp_scalar(normalized, 0.0, 1.0);
 
   if (normalized <= kAnalogLowDeadzone) {
     return 0.0;
@@ -36,58 +30,21 @@ inline double normalize_analogue_trigger(
   return clamp_scalar(normalized, 0.0, 1.0);
 }
 
-inline void zero_wrench(
-    VirtContext context) {
-
+inline void zero_wrench(VirtContext context) {
   float wrench[6] = {
-      0.0f,
-      0.0f,
-      0.0f,
-      0.0f,
-      0.0f,
-      0.0f};
+      0.0f, 0.0f, 0.0f,
+      0.0f, 0.0f, 0.0f};
 
-  virtSetForce(
-      context,
-      wrench);
+  virtSetForce(context, wrench);
 }
 
-inline void shutdown_virtuose(
-    VirtContext context) {
-
+inline void shutdown_virtuose(VirtContext context) {
   if (!context) {
     return;
   }
 
-  zero_wrench(
-      context);
-
-  virtEnableForceFeedback(
-      context,
-      0);
-
-  virtSetPowerOn(
-      context,
-      0);
-
-  virtClose(
-      context);
-}
-
-inline const char* power_label(
-    double power) {
-
-  constexpr double kPowerDeadbandW =
-      0.01;
-
-  if (std::abs(power) <
-      kPowerDeadbandW) {
-    return "NEAR_ZERO";
-  }
-
-  if (power < 0.0) {
-    return "RESISTING";
-  }
-
-  return "ASSISTING";
+  zero_wrench(context);
+  virtEnableForceFeedback(context, 0);
+  virtSetPowerOn(context, 0);
+  virtClose(context);
 }
