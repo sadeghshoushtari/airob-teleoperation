@@ -74,6 +74,13 @@ constexpr double kTorqueReflectionMomentRampEndNm = 3.5;    // Nm
 // Virtuose command limits
 constexpr double kDeviceForceCeilingN = 30.0;
 constexpr double kDeviceTorqueCeilingNm = 1.5;
+
+// Contact saturation hold.
+// This does not change the baseline wrench calculation. If the already
+// rendered baseline command reaches a device ceiling during detected contact,
+// only the command sent to the Virtuose is held at that ceiling. The hold is
+// released immediately when the existing contact detector returns to zero.
+constexpr bool kEnableContactSaturationHold = true;
 constexpr double kMaxForceStepN = 0.075;    // N/cycle @ 1 kHz
 constexpr double kMaxTorqueStepNm = 0.010;  // Nm/cycle @ 1 kHz
 constexpr double kForceFilterAlpha = 0.5;

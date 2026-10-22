@@ -186,6 +186,13 @@ int main() {
   Vector6d filtered_wrench = Vector6d::Zero();
   Vector6d rendered_wrench = Vector6d::Zero();
 
+  bool force_saturation_hold = false;
+  bool torque_saturation_hold = false;
+  Eigen::Vector3d force_saturation_hold_direction =
+      Eigen::Vector3d::UnitX();
+  Eigen::Vector3d torque_saturation_hold_direction =
+      Eigen::Vector3d::UnitX();
+
   bool backward_reference_ready = false;
   bool previous_backward_active = false;
   Eigen::Vector3d virtuose_position_reference = Eigen::Vector3d::Zero();
@@ -638,10 +645,87 @@ int main() {
         Eigen::Vector3d(rendered_wrench.tail<3>()),
         kDeviceTorqueCeilingNm);
 
+    // ------------------------------------------------------------
+    // CONTACT SATURATION HOLD
+    //
+    // IMPORTANT:
+    //   rendered_wrench remains the verified baseline controller state.
+    //   The hold changes only commanded_wrench, which is sent to the
+    //   Virtuose. Therefore releasing contact immediately returns to the
+    //   normal baseline output instead of leaving a saturated state inside
+    //   the filter/slew limiter.
+    //
+    //   - Enter force hold only after the baseline force has actually
+    //     reached the 30 N device ceiling.
+    //   - Enter torque hold only after the baseline torque has actually
+    //     reached the 1.5 Nm device ceiling.
+    //   - Keep the held magnitude while the existing contact detector is
+    //     active.
+    //   - Release both holds as soon as that contact detector returns to 0.
+    // ------------------------------------------------------------
+
+    Vector6d commanded_wrench = rendered_wrench;
+
+    const bool contact_active =
+        torque_reflection_contact_weight > 0.0;
+
+    const bool saturation_hold_allowed =
+        kEnableContactSaturationHold &&
+        backward_active &&
+        backward_reference_ready &&
+        contact_active;
+
+    const double rendered_force_norm =
+        rendered_wrench.head<3>().norm();
+    const double rendered_torque_norm =
+        rendered_wrench.tail<3>().norm();
+
+    if (!saturation_hold_allowed) {
+      force_saturation_hold = false;
+      torque_saturation_hold = false;
+    } else {
+      if (!force_saturation_hold &&
+          rendered_force_norm >= kDeviceForceCeilingN - 1e-9) {
+        force_saturation_hold = true;
+        force_saturation_hold_direction =
+            rendered_wrench.head<3>() / rendered_force_norm;
+        std::cerr << "\n[FORCE SATURATION HOLD ACTIVE]\n";
+      }
+
+      if (!torque_saturation_hold &&
+          rendered_torque_norm >= kDeviceTorqueCeilingNm - 1e-9) {
+        torque_saturation_hold = true;
+        torque_saturation_hold_direction =
+            rendered_wrench.tail<3>() / rendered_torque_norm;
+        std::cerr << "\n[TORQUE SATURATION HOLD ACTIVE]\n";
+      }
+
+      // Follow the current baseline command direction whenever it is valid.
+      // If the baseline vector becomes numerically tiny during contact, keep
+      // the last valid direction instead of normalizing noise.
+      if (force_saturation_hold) {
+        if (rendered_force_norm > 1e-6) {
+          force_saturation_hold_direction =
+              rendered_wrench.head<3>() / rendered_force_norm;
+        }
+        commanded_wrench.head<3>() =
+            kDeviceForceCeilingN * force_saturation_hold_direction;
+      }
+
+      if (torque_saturation_hold) {
+        if (rendered_torque_norm > 1e-6) {
+          torque_saturation_hold_direction =
+              rendered_wrench.tail<3>() / rendered_torque_norm;
+        }
+        commanded_wrench.tail<3>() =
+            kDeviceTorqueCeilingNm * torque_saturation_hold_direction;
+      }
+    }
+
     if (backward_active && backward_reference_ready) {
       float wrench[6];
       for (int i = 0; i < 6; ++i) {
-        wrench[i] = static_cast<float>(rendered_wrench[i]);
+        wrench[i] = static_cast<float>(commanded_wrench[i]);
       }
 
       if (virtSetForce(context, wrench) != 0) {
@@ -651,6 +735,8 @@ int main() {
       zero_wrench(context);
       filtered_wrench.setZero();
       rendered_wrench.setZero();
+      force_saturation_hold = false;
+      torque_saturation_hold = false;
     }
 
     const double command_packet[kCommandPacketSize] = {
@@ -684,7 +770,8 @@ int main() {
           stderr,
           "[MASTER] active=%d trigger=%.2f "
           "Slave Kt=%.1f Kr=%.1f | Master Kt=%.2f Kr=%.2f | "
-          "F=%.2f N M=%.2f Nm | contact=%.2f gM=%.3f | age=%.2f ms\n",
+          "F=%.2f N M=%.2f Nm | contact=%.2f gM=%.3f "
+          "holdF=%d holdM=%d cmdF=%.2f N cmdM=%.2f Nm | age=%.2f ms\n",
           backward_active ? 1 : 0,
           current_analog_normalized,
           franka_translational_stiffness_applied,
@@ -695,6 +782,10 @@ int main() {
           torque_safe ? torque_mapped.norm() : 0.0,
           torque_reflection_contact_weight,
           effective_torque_reflection_gain,
+          force_saturation_hold ? 1 : 0,
+          torque_saturation_hold ? 1 : 0,
+          commanded_wrench.head<3>().norm(),
+          commanded_wrench.tail<3>().norm(),
           feedback_age_ms);
     }
 
