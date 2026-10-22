@@ -21,3 +21,4 @@ cmake-build-*/
 # Local build executables
 Master/masterv
 Slave/slavev
+logs/

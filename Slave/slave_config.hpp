@@ -38,6 +38,21 @@ constexpr double kMaxRelativeRotationRad = 60.0 * kPi / 180.0;
 constexpr double kMaxDesiredLinearSpeedMps = 1.50;
 constexpr double kMaxDesiredAngularSpeedRadps = 120.0 * kPi / 180.0;
 
+// Joint-velocity soft guard.
+// These are Franka's suggested conservative rectangular FR3 velocity limits.
+// The guard starts before those values are reached and smoothly removes the
+// Cartesian tracking drive as measured joint speed approaches the stop ratio.
+constexpr std::array<double, 7> kJointVelocityGuardLimitsRadps = {
+    2.0,
+    1.0,
+    1.5,
+    1.25,
+    3.0,
+    1.5,
+    3.0};
+constexpr double kJointVelocityGuardStartRatio = 0.70;
+constexpr double kJointVelocityGuardStopRatio = 0.85;
+
 // Nullspace / numerical regularization
 constexpr double kNullspaceStiffness = 8.0;
 constexpr double kNullspaceDamping = 2.5;

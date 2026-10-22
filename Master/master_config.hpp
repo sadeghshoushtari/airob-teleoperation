@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 
 #include "teleop_common.hpp"
@@ -29,8 +30,8 @@ constexpr double kMaxBackwardPositionErrorM = 0.10;            // m
 
 // Backward rotational coupling
 constexpr double kMinimumBackwardRotationStiffness = 0.5;      // Nm/rad
-constexpr double kBaselineBackwardRotationStiffness = 1.00;     // Nm/rad
-constexpr double kMaximumBackwardRotationStiffness = 1.50;      // Nm/rad
+constexpr double kBaselineBackwardRotationStiffness = 1.00;    // Nm/rad
+constexpr double kMaximumBackwardRotationStiffness = 1.50;     // Nm/rad
 constexpr double kBaselineBackwardRotationDamping = 0.15;      // Nms/rad
 constexpr double kMaximumBackwardRotationStiffnessRate = 0.5;  // Nm/rad/s
 constexpr double kMaxBackwardRotationErrorRad = 30.0 * kPi / 180.0;
@@ -38,13 +39,37 @@ constexpr double kMinBackwardRotationErrorRad = 2.0 * kPi / 180.0;
 
 // Selective directional damping
 constexpr double kDirectionalLinearDamping = 1.0;       // Ns/m
-constexpr double kDirectionalAngularDamping = 0.5;      // Nms/rad
+constexpr double kDirectionalAngularDamping = 0.25;      // Nms/rad
 constexpr double kDirectionalForceThresholdN = 0.5;     // N
-constexpr double kDirectionalTorqueThresholdNm = 0.1;   // Nm
+constexpr double kDirectionalTorqueThresholdNm = 1.5;   // Nm
 
 // Wrench reflection
 constexpr double kForceReflectionGain = 0.6;
-constexpr double kTorqueReflectionGain = 0.3;
+
+// Empirical force-to-moment cross-coupling compensation.
+// Identified from the locked-orientation translation test.
+// The vector is expressed in the Franka O frame and is an empirical
+// compensation model, not physical tool geometry.
+constexpr bool kEnableMomentCompensation = true;
+constexpr double kMomentCompensationScale = 1.0;
+constexpr std::array<double, 3> kMomentCompensationVectorO = {
+    0.405,
+    0.071,
+    0.205};
+
+// Contact-aware rotational reflection.
+// Free-space residuals receive only the minimum gain.
+// Strong force or moment contact smoothly raises the gain to the maximum.
+constexpr double kMinimumTorqueReflectionGain = 0.05;
+constexpr double kMaximumTorqueReflectionGain = 0.50;
+
+// Raised from the first experiment so free-space estimator excursions do not
+// falsely look like contact. These thresholds are applied to the debiased
+// Franka wrench estimate.
+constexpr double kTorqueReflectionForceRampStartN = 3.5;    // N
+constexpr double kTorqueReflectionForceRampEndN = 6.0;      // N
+constexpr double kTorqueReflectionMomentRampStartNm = 2.3;  // Nm
+constexpr double kTorqueReflectionMomentRampEndNm = 3.5;    // Nm
 
 // Virtuose command limits
 constexpr double kDeviceForceCeilingN = 30.0;
@@ -54,7 +79,10 @@ constexpr double kMaxTorqueStepNm = 0.010;  // Nm/cycle @ 1 kHz
 constexpr double kForceFilterAlpha = 0.5;
 constexpr double kTorqueFilterAlpha = 0.5;
 
-// Startup wrench bias
+// Startup wrench bias: fixed after startup; no online adaptation.
+// Ignore the Slave's zero-filled startup feedback and allow the Franka
+// external-wrench estimate to settle before collecting calibration samples.
+constexpr double kBiasWarmupS = 2.0;
 constexpr int kBiasSamplesRequired = 500;
 
 // Virtuose API scaling

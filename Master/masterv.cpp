@@ -1,4 +1,4 @@
-// master_bilateral_variable_impedance
+// master_bilateral_variable_impedance.cpp
 
 #include <algorithm>
 #include <chrono>
@@ -26,6 +26,16 @@
 
 namespace {
 using Vector6d = Eigen::Matrix<double, 6, 1>;
+
+double smoothstep_between(double value, double start, double end) {
+  if (!std::isfinite(value) || end <= start) {
+    return 0.0;
+  }
+
+  const double x =
+      std::clamp((value - start) / (end - start), 0.0, 1.0);
+  return x * x * (3.0 - 2.0 * x);
+}
 }
 
 int main() {
@@ -169,6 +179,9 @@ int main() {
   Vector6d wrench_bias = Vector6d::Zero();
   int bias_count = 0;
   bool bias_ready = false;
+  bool bias_sampling_started = false;
+  bool bias_feedback_id_seen = false;
+  uint64_t last_bias_feedback_id = 0;
 
   Vector6d filtered_wrench = Vector6d::Zero();
   Vector6d rendered_wrench = Vector6d::Zero();
@@ -346,14 +359,67 @@ int main() {
       }
     }
 
-    if (feedback_live && !bias_ready) {
+    const double feedback_source_time_us =
+        feedback_received ? feedback[1] : 0.0;
+
+    const bool feedback_source_time_valid =
+        feedback_live &&
+        std::isfinite(feedback_source_time_us) &&
+        feedback_source_time_us >= 0.0;
+
+    const bool franka_wrench_warmed_up =
+        feedback_source_time_valid &&
+        feedback_source_time_us >= kBiasWarmupS * 1e6;
+
+    bool new_bias_feedback_sample = false;
+    uint64_t current_feedback_id = 0;
+
+    if (franka_wrench_warmed_up &&
+        std::isfinite(feedback[0]) &&
+        feedback[0] >= 0.0) {
+      current_feedback_id =
+          static_cast<uint64_t>(std::llround(feedback[0]));
+
+      new_bias_feedback_sample =
+          !bias_feedback_id_seen ||
+          current_feedback_id != last_bias_feedback_id;
+    }
+
+    if (!bias_ready &&
+        franka_wrench_warmed_up &&
+        new_bias_feedback_sample &&
+        raw_wrench.allFinite()) {
+
+      if (!bias_sampling_started) {
+        bias_sampling_started = true;
+        std::cerr
+            << "\n[WRENCH BIAS SAMPLING STARTED] "
+            << "Franka source time="
+            << feedback_source_time_us * 1e-6
+            << " s\n";
+      }
+
       bias_sum += raw_wrench;
       ++bias_count;
 
+      last_bias_feedback_id = current_feedback_id;
+      bias_feedback_id_seen = true;
+
       if (bias_count >= kBiasSamplesRequired) {
-        wrench_bias = bias_sum / static_cast<double>(bias_count);
+        wrench_bias =
+            bias_sum / static_cast<double>(bias_count);
         bias_ready = true;
-        std::cerr << "\n[WRENCH BIAS READY]\n";
+
+        std::cerr
+            << "\n[WRENCH BIAS READY] "
+            << "samples=" << bias_count
+            << " bias=["
+            << wrench_bias[0] << ", "
+            << wrench_bias[1] << ", "
+            << wrench_bias[2] << ", "
+            << wrench_bias[3] << ", "
+            << wrench_bias[4] << ", "
+            << wrench_bias[5] << "]\n";
       }
     }
 
@@ -362,10 +428,32 @@ int main() {
       debiased_wrench = raw_wrench - wrench_bias;
     }
 
+    const Eigen::Vector3d force_franka =
+        debiased_wrench.head<3>();
+    const Eigen::Vector3d torque_franka =
+        debiased_wrench.tail<3>();
+
+    Eigen::Vector3d corrected_torque_franka =
+        torque_franka;
+
+    if (kEnableMomentCompensation) {
+      const Eigen::Vector3d compensation_vector_O(
+          kMomentCompensationVectorO[0],
+          kMomentCompensationVectorO[1],
+          kMomentCompensationVectorO[2]);
+
+      const Eigen::Vector3d estimated_force_induced_moment =
+          compensation_vector_O.cross(force_franka);
+
+      corrected_torque_franka -=
+          kMomentCompensationScale *
+          estimated_force_induced_moment;
+    }
+
     const Eigen::Vector3d force_mapped =
-        v_to_f.transpose() * debiased_wrench.head<3>();
+        v_to_f.transpose() * force_franka;
     const Eigen::Vector3d torque_mapped =
-        v_to_f.transpose() * debiased_wrench.tail<3>();
+        v_to_f.transpose() * corrected_torque_franka;
     const Eigen::Vector3d franka_linear_velocity_mapped =
         v_to_f.transpose() * franka_linear_velocity;
     const Eigen::Vector3d franka_angular_velocity_mapped =
@@ -465,13 +553,40 @@ int main() {
     }
 
     Vector6d reflection_wrench = Vector6d::Zero();
+    double torque_reflection_contact_weight = 0.0;
+    double effective_torque_reflection_gain = 0.0;
+
     if (kEnableForceReflection && force_safe) {
       reflection_wrench.head<3>() =
           -kForceReflectionGain * force_mapped;
     }
+
     if (kEnableTorqueReflection && torque_safe) {
+      const double force_contact_weight =
+          force_safe
+              ? smoothstep_between(
+                    force_mapped.norm(),
+                    kTorqueReflectionForceRampStartN,
+                    kTorqueReflectionForceRampEndN)
+              : 0.0;
+
+      const double torque_contact_weight =
+          smoothstep_between(
+              torque_mapped.norm(),
+              kTorqueReflectionMomentRampStartNm,
+              kTorqueReflectionMomentRampEndNm);
+
+      torque_reflection_contact_weight =
+          std::max(force_contact_weight, torque_contact_weight);
+
+      effective_torque_reflection_gain =
+          kMinimumTorqueReflectionGain +
+          torque_reflection_contact_weight *
+              (kMaximumTorqueReflectionGain -
+               kMinimumTorqueReflectionGain);
+
       reflection_wrench.tail<3>() =
-          -kTorqueReflectionGain * torque_mapped;
+          -effective_torque_reflection_gain * torque_mapped;
     }
 
     Vector6d directional_wrench = Vector6d::Zero();
@@ -549,7 +664,7 @@ int main() {
         static_cast<double>(pose[1]),
         static_cast<double>(pose[2]),
         kEnableForceReflection ? kForceReflectionGain : 0.0,
-        kEnableTorqueReflection ? kTorqueReflectionGain : 0.0,
+        kEnableTorqueReflection ? effective_torque_reflection_gain : 0.0,
         current_stiffness,
         static_cast<double>(deadman),
         static_cast<double>(emergency_stop)};
@@ -568,13 +683,18 @@ int main() {
       std::fprintf(
           stderr,
           "[MASTER] active=%d trigger=%.2f "
-          "Slave Kt=%.1f Kr=%.1f | Master Kt=%.2f Kr=%.2f | age=%.2f ms\n",
+          "Slave Kt=%.1f Kr=%.1f | Master Kt=%.2f Kr=%.2f | "
+          "F=%.2f N M=%.2f Nm | contact=%.2f gM=%.3f | age=%.2f ms\n",
           backward_active ? 1 : 0,
           current_analog_normalized,
           franka_translational_stiffness_applied,
           franka_rotational_stiffness_applied,
           current_master_translational_stiffness_applied,
           current_master_rotational_stiffness_applied,
+          force_safe ? force_mapped.norm() : 0.0,
+          torque_safe ? torque_mapped.norm() : 0.0,
+          torque_reflection_contact_weight,
+          effective_torque_reflection_gain,
           feedback_age_ms);
     }
 

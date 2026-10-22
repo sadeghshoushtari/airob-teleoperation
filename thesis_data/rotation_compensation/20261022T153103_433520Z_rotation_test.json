@@ -1,0 +1,167 @@
+{
+  "schema_version": 1,
+  "reference_commit": "085cbc9317c1a2484677f3ccfe0a5fd56d653faa",
+  "logger_sha256": "953bbf88f533412f07548e9fdbbb4aa7841539194eb6306dc9796469f912d725",
+  "target_log_hz": 100,
+  "interface": "lo",
+  "ipv4_endpoints": "127.0.0.1",
+  "command_port": 11056,
+  "feedback_port": 11055,
+  "byte_order": "little",
+  "label": "rotation_test",
+  "notes": "",
+  "project_at_start": {
+    "path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis",
+    "files": {
+      "Common/teleop_common.hpp": {
+        "sha256": "2d0bdaecbb4e2a2e10da2969fd82ae17e7366e78321e053eafcb59dced17ed6a",
+        "text": "#pragma once\n\n#include <array>\n#include <cstddef>\n\ninline constexpr double kPi =\n    3.14159265358979323846;\n\ninline constexpr const char* kLoopbackIp =\n    \"127.0.0.1\";\n\ninline constexpr const char* kSlaveIp =\n    kLoopbackIp;\n\ninline constexpr const char* kFeedbackDestinationIp =\n    kLoopbackIp;\n\ninline constexpr int kCommandPort =\n    11056;\n\ninline constexpr int kFeedbackPort =\n    11055;\n\ninline constexpr int kCommandSendPort =\n    kCommandPort;\n\ninline constexpr int kCommandReceivePort =\n    kCommandPort;\n\ninline constexpr int kFeedbackSendPort =\n    kFeedbackPort;\n\ninline constexpr int kFeedbackReceivePort =\n    kFeedbackPort;\n\ninline constexpr std::size_t kCommandPacketSize =\n    14;\n\ninline constexpr std::size_t kFeedbackPacketSize =\n    23;\n\ninline constexpr std::array<double, 9> kVirtuoseToFranka = {\n    1.0, 0.0, 0.0,\n    0.0, 1.0, 0.0,\n    0.0, 0.0, 1.0};\n"
+      },
+      "Master/master_config.hpp": {
+        "sha256": "2ddc9de079f350ed8449de66feea3b8f4a5f44627286fe9f1aa7a443055602a6",
+        "text": "#pragma once\n\n#include <array>\n#include <cstddef>\n\n#include \"teleop_common.hpp\"\n\nnamespace {\n\n// Timing / communication\nconstexpr double kLoopHz = 1000.0;\nconstexpr double kFeedbackStaleMs = 50.0;\nconstexpr float kVirtuoseApiTimeoutS = 0.05f;\n\n// Backward controller enables\nconstexpr bool kEnableBackwardPositionCoupling = true;\nconstexpr bool kEnableBackwardRotationCoupling = true;\nconstexpr bool kEnableDirectionalForceDamping = true;\nconstexpr bool kEnableDirectionalTorqueDamping = true;\nconstexpr bool kEnableForceReflection = true;\nconstexpr bool kEnableTorqueReflection = true;\n\n// Backward translational coupling\nconstexpr double kMinimumBackwardPositionStiffness = 5.0;      // N/m\nconstexpr double kBaselineBackwardPositionStiffness = 10.0;    // N/m\nconstexpr double kMaximumBackwardPositionStiffness = 15.0;     // N/m\nconstexpr double kBaselineBackwardPositionDamping = 1.0;       // Ns/m\nconstexpr double kMaximumBackwardPositionStiffnessRate = 5.0;  // N/m/s\nconstexpr double kMaxBackwardPositionErrorM = 0.10;            // m\n\n// Backward rotational coupling\nconstexpr double kMinimumBackwardRotationStiffness = 0.5;      // Nm/rad\nconstexpr double kBaselineBackwardRotationStiffness = 1.00;    // Nm/rad\nconstexpr double kMaximumBackwardRotationStiffness = 1.50;     // Nm/rad\nconstexpr double kBaselineBackwardRotationDamping = 0.15;      // Nms/rad\nconstexpr double kMaximumBackwardRotationStiffnessRate = 0.5;  // Nm/rad/s\nconstexpr double kMaxBackwardRotationErrorRad = 30.0 * kPi / 180.0;\nconstexpr double kMinBackwardRotationErrorRad = 2.0 * kPi / 180.0;\n\n// Selective directional damping\nconstexpr double kDirectionalLinearDamping = 1.0;       // Ns/m\nconstexpr double kDirectionalAngularDamping = 0.25;      // Nms/rad\nconstexpr double kDirectionalForceThresholdN = 0.5;     // N\nconstexpr double kDirectionalTorqueThresholdNm = 1.5;   // Nm\n\n// Wrench reflection\nconstexpr double kForceReflectionGain = 0.6;\n\n// Empirical force-to-moment cross-coupling compensation.\n// Identified from the locked-orientation translation test.\n// The vector is expressed in the Franka O frame and is an empirical\n// compensation model, not physical tool geometry.\nconstexpr bool kEnableMomentCompensation = true;\nconstexpr double kMomentCompensationScale = 1.0;\nconstexpr std::array<double, 3> kMomentCompensationVectorO = {\n    0.405,\n    0.071,\n    0.205};\n\n// Contact-aware rotational reflection.\n// Free-space residuals receive only the minimum gain.\n// Strong force or moment contact smoothly raises the gain to the maximum.\nconstexpr double kMinimumTorqueReflectionGain = 0.05;\nconstexpr double kMaximumTorqueReflectionGain = 0.50;\n\n// Raised from the first experiment so free-space estimator excursions do not\n// falsely look like contact. These thresholds are applied to the debiased\n// Franka wrench estimate.\nconstexpr double kTorqueReflectionForceRampStartN = 3.5;    // N\nconstexpr double kTorqueReflectionForceRampEndN = 6.0;      // N\nconstexpr double kTorqueReflectionMomentRampStartNm = 2.3;  // Nm\nconstexpr double kTorqueReflectionMomentRampEndNm = 3.5;    // Nm\n\n// Virtuose command limits\nconstexpr double kDeviceForceCeilingN = 30.0;\nconstexpr double kDeviceTorqueCeilingNm = 1.5;\nconstexpr double kMaxForceStepN = 0.075;    // N/cycle @ 1 kHz\nconstexpr double kMaxTorqueStepNm = 0.010;  // Nm/cycle @ 1 kHz\nconstexpr double kForceFilterAlpha = 0.5;\nconstexpr double kTorqueFilterAlpha = 0.5;\n\n// Startup wrench bias: fixed after startup; no online adaptation.\nconstexpr int kBiasSamplesRequired = 500;\n\n// Virtuose API scaling\nconstexpr float kVirtuoseForceFactor = 1.0f;\nconstexpr float kVirtuoseSpeedFactor = 1.0f;\n\n// Analogue trigger\nconstexpr std::size_t kStiffnessAnalogChannel = 0;\nconstexpr double kAnalogReleasedValue = 0.0;\nconstexpr double kAnalogFullyPressedValue = 1.0;\nconstexpr double kAnalogLowDeadzone = 0.03;\nconstexpr double kAnalogFilterTimeConstantS = 0.030;\n\n// Slave translational stiffness command\nconstexpr double kMinimumTranslationalStiffness = 300.0;  // N/m\nconstexpr double kMaximumTranslationalStiffness = 700.0;  // N/m\n\n// Console\nconstexpr int kConsolePrintEveryCycles = 200;\n\n}  // namespace"
+      },
+      "Slave/slave_config.hpp": {
+        "sha256": "2b4cd8cfe6e9763085fab52ec6b1e0eccebcd5189ce8bb33353bad3c5d14a52a",
+        "text": "#pragma once\n\n#include <array>\n#include <cstdint>\n\n#include \"teleop_common.hpp\"\n\nnamespace {\n\n// Communication\nconstexpr double kControlRateHz = 1000.0;\nconstexpr uint64_t kMasterStaleNs = 50ULL * 1000ULL * 1000ULL;\nconstexpr int kFeedbackSendPeriodUs = 1000;\nconstexpr int kReceiveIdleSleepUs = 100;\n\n// Translational impedance\nconstexpr double kMinimumTranslationalStiffness = 300.0;   // N/m\nconstexpr double kBaselineTranslationalStiffness = 500.0;  // N/m\nconstexpr double kMaximumTranslationalStiffness = 700.0;   // N/m\nconstexpr double kBaselineTranslationalDamping = 20.0;     // Ns/m\nconstexpr double kMaximumStiffnessRate = 200.0;            // N/m/s\n\n// Rotational impedance\nconstexpr double kMinimumRotationalStiffness = 40.0;       // Nm/rad\nconstexpr double kBaselineRotationalStiffness = 80.0;      // Nm/rad\nconstexpr double kMaximumRotationalStiffness = 80.0;       // Nm/rad\nconstexpr double kBaselineRotationalDamping = 0.5;         // Nms/rad\nconstexpr double kMaximumRotationalStiffnessRate = 20.0;   // Nm/rad/s\n\n// Forward teleoperation\nconstexpr bool kEnableTranslationFollowing = true;\nconstexpr bool kEnableRotationFollowing = false;\nconstexpr double kPositionScaleX = 1.0;\nconstexpr double kPositionScaleY = 1.0;\nconstexpr double kPositionScaleZ = 1.0;\nconstexpr double kMaxTranslationPerAxisM = 0.80;\nconstexpr double kMaxRelativeRotationRad = 60.0 * kPi / 180.0;\nconstexpr double kMaxDesiredLinearSpeedMps = 1.50;\nconstexpr double kMaxDesiredAngularSpeedRadps = 120.0 * kPi / 180.0;\n\n// Joint-velocity soft guard.\n// These are Franka's suggested conservative rectangular FR3 velocity limits.\n// The guard starts before those values are reached and smoothly removes the\n// Cartesian tracking drive as measured joint speed approaches the stop ratio.\nconstexpr std::array<double, 7> kJointVelocityGuardLimitsRadps = {\n    2.0,\n    1.0,\n    1.5,\n    1.25,\n    3.0,\n    1.5,\n    3.0};\nconstexpr double kJointVelocityGuardStartRatio = 0.70;\nconstexpr double kJointVelocityGuardStopRatio = 0.85;\n\n// Nullspace / numerical regularization\nconstexpr double kNullspaceStiffness = 8.0;\nconstexpr double kNullspaceDamping = 2.5;\nconstexpr double kDampedInverseLambda = 0.05;\n\n// Torque / callback limits\nconstexpr double kMaxDeltaTorquePerCycleNm = 1.0;\nconstexpr double kMinimumCallbackDtS = 0.0005;\n\n// Franka startup\nconstexpr std::array<double, 7> kInitialJointConfiguration = {\n    0.0,\n    -kPi / 4.0,\n    0.0,\n    -3.0 * kPi / 4.0,\n    0.0,\n    kPi / 2.0,\n    kPi / 4.0};\n\nconstexpr double kInitialMotionSpeedFactor = 0.35;\nconstexpr double kCollisionThreshold = 35.0;\n\n}  // namespace"
+      },
+      "Master/masterv.cpp": {
+        "sha256": "0c66770c374ea348bd766c5998901c0142aa3fb81197a059832fe622bec07ae9"
+      },
+      "Slave/slavev.cpp": {
+        "sha256": "51a288a3dc6cf81922ea9a80534884cedf784e4a886ca48fa4814b47db458150"
+      }
+    },
+    "head": "085cbc9317c1a2484677f3ccfe0a5fd56d653faa",
+    "branch": "development",
+    "status": "M Master/master_config.hpp\n M Master/masterv.cpp\n M Slave/slave_config.hpp\n M Slave/slavev.cpp\n?? logs/\n?? teleop_logger.py"
+  },
+  "socket_receive_buffer_bytes": 425984,
+  "semantics": "Passive 100 Hz diagnostic logger for the local Virtuose--Franka UDP link.\n\nLinux / Python 3.8+, standard library only; no compilation required.\nPlace this script in the thesis root, beside Master/, Slave/, and Common/.\nRun in a separate terminal:\n    sudo python3 teleop_logger.py --label rotation_xyz\nBy default, logs/ is created beside this script, regardless of the terminal's\nworking directory. --output overrides that location if explicitly supplied.\nStop with Ctrl+C. Optional: --duration 60. See --help for other options.\n\nNo controller edits, UDP port sharing, forwarding, or transmitted packets.\nAn AF_PACKET socket receives copies on lo. A kernel filter selects only\n127.0.0.1 -> 127.0.0.1 UDP destination ports 11056 and 11055. Outgoing copies\nare discarded. Capture requires root or CAP_NET_RAW. When invoked with sudo,\nroot privileges are dropped to the invoking user after opening the socket.\n\nOne CSV row per nominal 10 ms contains the latest command and feedback,\nplus statistics over all accepted packets dequeued since the preceding row.\nThe existing 1 kHz traffic is inspected in memory; no full-rate file is made.\nCapture and disk writing use separate threads. Scheduling is best-effort:\nlate intervals are recorded, skipped ticks are counted, and no catch-up rows\nare invented. This process still uses CPU; lab timing impact is unvalidated.\n\nMeasurement limits:\n  * Poses and raw Franka estimated external wrench are on-wire values.\n  * Commanded slave Kt and feedback applied slave Kt/Kr are transmitted.\n  * No master velocity, bias, rendered wrench, individual haptic terms,\n    captured references, desired slave pose, alarm, or active flag is sent.\n    Therefore this logger does not fabricate exact tracking errors, master\n    power/passivity, saturation, trigger position, damping, or active state.\n  * A command and feedback in one row are independently sampled latest\n    values, not a matched request/reply. Their source clocks start separately.\n  * Receive times/ages use logger dequeue time, not kernel/hardware arrival\n    time or one-way latency. Backlog can make old packets appear recent.\n  * Feedback is assembled from separate atomic fields in the controller;\n    the wire packet is not guaranteed to be one coherent control-cycle state.\n  * Feedback IDs are callback IDs, not send IDs. Skips/repeats are observations,\n    not proof of network loss. Backward IDs can also mean restart/reordering.\n  * 100 Hz snapshots are not anti-aliased. Do not use them for >50 Hz spectra\n    or rigorous 1 kHz passivity analysis. Window RMS/absolute peaks preserve\n    some brief wrench events, but not their full waveform. Duplicated feedback\n    samples are included, so RMS is packet-weighted, not callback-weighted.\n\nEach run creates a CSV and JSON with schema notes, capture diagnostics,\nreference commit, and optional hashes/Git state of the local project.\nNo recorded configuration or Git state proves which executable is running.\n",
+  "complete": true,
+  "start_utc": "2026-10-22T15:31:03.437621+00:00",
+  "columns": [
+    "row",
+    "logger_t_s",
+    "logger_window_ms",
+    "logger_lateness_ms",
+    "logger_skipped_ticks_total",
+    "cmd_seen",
+    "cmd_logger_receive_age_ms",
+    "cmd_id_or_timestamp_change_age_ms",
+    "cmd_receive_stale_50ms",
+    "cmd_valid_packets_window",
+    "cmd_valid_packets_total",
+    "cmd_invalid_packets_total",
+    "cmd_repeated_ids_window",
+    "cmd_skipped_ids_window",
+    "cmd_backward_ids_window",
+    "cmd_max_dequeue_gap_ms_window",
+    "cmd_id",
+    "cmd_source_time_us",
+    "master_qw",
+    "master_qx",
+    "master_qy",
+    "master_qz",
+    "master_x_m",
+    "master_y_m",
+    "master_z_m",
+    "force_reflection_gain_metadata",
+    "torque_reflection_gain_metadata",
+    "slave_Kt_command_N_per_m",
+    "deadman_raw",
+    "estop_raw",
+    "cmd_quaternion_norm",
+    "deadman_or_estop_changes_window",
+    "fb_seen",
+    "fb_logger_receive_age_ms",
+    "fb_id_or_timestamp_change_age_ms",
+    "fb_receive_stale_50ms",
+    "fb_valid_packets_window",
+    "fb_valid_packets_total",
+    "fb_invalid_packets_total",
+    "fb_repeated_ids_window",
+    "fb_skipped_ids_window",
+    "fb_backward_ids_window",
+    "fb_max_dequeue_gap_ms_window",
+    "fb_id",
+    "fb_source_time_us",
+    "franka_Fx_N",
+    "franka_Fy_N",
+    "franka_Fz_N",
+    "franka_Mx_Nm",
+    "franka_My_Nm",
+    "franka_Mz_Nm",
+    "franka_x_m",
+    "franka_y_m",
+    "franka_z_m",
+    "franka_qw",
+    "franka_qx",
+    "franka_qy",
+    "franka_qz",
+    "franka_vx_m_per_s",
+    "franka_vy_m_per_s",
+    "franka_vz_m_per_s",
+    "franka_wx_rad_per_s",
+    "franka_wy_rad_per_s",
+    "franka_wz_rad_per_s",
+    "slave_Kt_applied_N_per_m",
+    "slave_Kr_applied_Nm_per_rad",
+    "fb_quaternion_norm",
+    "franka_Fx_N_abs_peak_window",
+    "franka_Fx_N_rms_window",
+    "franka_Fy_N_abs_peak_window",
+    "franka_Fy_N_rms_window",
+    "franka_Fz_N_abs_peak_window",
+    "franka_Fz_N_rms_window",
+    "franka_Mx_Nm_abs_peak_window",
+    "franka_Mx_Nm_rms_window",
+    "franka_My_Nm_abs_peak_window",
+    "franka_My_Nm_rms_window",
+    "franka_Mz_Nm_abs_peak_window",
+    "franka_Mz_Nm_rms_window",
+    "franka_force_norm_peak_N_window",
+    "franka_moment_norm_peak_Nm_window"
+  ],
+  "kernel_capture_packets": 92053,
+  "kernel_capture_drops": 0,
+  "error": null,
+  "rows": 5251,
+  "wall_duration_s": 52.518702381,
+  "logger_skipped_ticks": 0,
+  "last_row_t_s": 52.51007944,
+  "valid_packets": {
+    "cmd": 43526,
+    "fb": 48527
+  },
+  "invalid_packets": {
+    "cmd": 0,
+    "fb": 0
+  },
+  "project_at_end": {
+    "path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis",
+    "files": {
+      "Common/teleop_common.hpp": {
+        "sha256": "2d0bdaecbb4e2a2e10da2969fd82ae17e7366e78321e053eafcb59dced17ed6a",
+        "text": "#pragma once\n\n#include <array>\n#include <cstddef>\n\ninline constexpr double kPi =\n    3.14159265358979323846;\n\ninline constexpr const char* kLoopbackIp =\n    \"127.0.0.1\";\n\ninline constexpr const char* kSlaveIp =\n    kLoopbackIp;\n\ninline constexpr const char* kFeedbackDestinationIp =\n    kLoopbackIp;\n\ninline constexpr int kCommandPort =\n    11056;\n\ninline constexpr int kFeedbackPort =\n    11055;\n\ninline constexpr int kCommandSendPort =\n    kCommandPort;\n\ninline constexpr int kCommandReceivePort =\n    kCommandPort;\n\ninline constexpr int kFeedbackSendPort =\n    kFeedbackPort;\n\ninline constexpr int kFeedbackReceivePort =\n    kFeedbackPort;\n\ninline constexpr std::size_t kCommandPacketSize =\n    14;\n\ninline constexpr std::size_t kFeedbackPacketSize =\n    23;\n\ninline constexpr std::array<double, 9> kVirtuoseToFranka = {\n    1.0, 0.0, 0.0,\n    0.0, 1.0, 0.0,\n    0.0, 0.0, 1.0};\n"
+      },
+      "Master/master_config.hpp": {
+        "sha256": "2ddc9de079f350ed8449de66feea3b8f4a5f44627286fe9f1aa7a443055602a6",
+        "text": "#pragma once\n\n#include <array>\n#include <cstddef>\n\n#include \"teleop_common.hpp\"\n\nnamespace {\n\n// Timing / communication\nconstexpr double kLoopHz = 1000.0;\nconstexpr double kFeedbackStaleMs = 50.0;\nconstexpr float kVirtuoseApiTimeoutS = 0.05f;\n\n// Backward controller enables\nconstexpr bool kEnableBackwardPositionCoupling = true;\nconstexpr bool kEnableBackwardRotationCoupling = true;\nconstexpr bool kEnableDirectionalForceDamping = true;\nconstexpr bool kEnableDirectionalTorqueDamping = true;\nconstexpr bool kEnableForceReflection = true;\nconstexpr bool kEnableTorqueReflection = true;\n\n// Backward translational coupling\nconstexpr double kMinimumBackwardPositionStiffness = 5.0;      // N/m\nconstexpr double kBaselineBackwardPositionStiffness = 10.0;    // N/m\nconstexpr double kMaximumBackwardPositionStiffness = 15.0;     // N/m\nconstexpr double kBaselineBackwardPositionDamping = 1.0;       // Ns/m\nconstexpr double kMaximumBackwardPositionStiffnessRate = 5.0;  // N/m/s\nconstexpr double kMaxBackwardPositionErrorM = 0.10;            // m\n\n// Backward rotational coupling\nconstexpr double kMinimumBackwardRotationStiffness = 0.5;      // Nm/rad\nconstexpr double kBaselineBackwardRotationStiffness = 1.00;    // Nm/rad\nconstexpr double kMaximumBackwardRotationStiffness = 1.50;     // Nm/rad\nconstexpr double kBaselineBackwardRotationDamping = 0.15;      // Nms/rad\nconstexpr double kMaximumBackwardRotationStiffnessRate = 0.5;  // Nm/rad/s\nconstexpr double kMaxBackwardRotationErrorRad = 30.0 * kPi / 180.0;\nconstexpr double kMinBackwardRotationErrorRad = 2.0 * kPi / 180.0;\n\n// Selective directional damping\nconstexpr double kDirectionalLinearDamping = 1.0;       // Ns/m\nconstexpr double kDirectionalAngularDamping = 0.25;      // Nms/rad\nconstexpr double kDirectionalForceThresholdN = 0.5;     // N\nconstexpr double kDirectionalTorqueThresholdNm = 1.5;   // Nm\n\n// Wrench reflection\nconstexpr double kForceReflectionGain = 0.6;\n\n// Empirical force-to-moment cross-coupling compensation.\n// Identified from the locked-orientation translation test.\n// The vector is expressed in the Franka O frame and is an empirical\n// compensation model, not physical tool geometry.\nconstexpr bool kEnableMomentCompensation = true;\nconstexpr double kMomentCompensationScale = 1.0;\nconstexpr std::array<double, 3> kMomentCompensationVectorO = {\n    0.405,\n    0.071,\n    0.205};\n\n// Contact-aware rotational reflection.\n// Free-space residuals receive only the minimum gain.\n// Strong force or moment contact smoothly raises the gain to the maximum.\nconstexpr double kMinimumTorqueReflectionGain = 0.05;\nconstexpr double kMaximumTorqueReflectionGain = 0.50;\n\n// Raised from the first experiment so free-space estimator excursions do not\n// falsely look like contact. These thresholds are applied to the debiased\n// Franka wrench estimate.\nconstexpr double kTorqueReflectionForceRampStartN = 3.5;    // N\nconstexpr double kTorqueReflectionForceRampEndN = 6.0;      // N\nconstexpr double kTorqueReflectionMomentRampStartNm = 2.3;  // Nm\nconstexpr double kTorqueReflectionMomentRampEndNm = 3.5;    // Nm\n\n// Virtuose command limits\nconstexpr double kDeviceForceCeilingN = 30.0;\nconstexpr double kDeviceTorqueCeilingNm = 1.5;\nconstexpr double kMaxForceStepN = 0.075;    // N/cycle @ 1 kHz\nconstexpr double kMaxTorqueStepNm = 0.010;  // Nm/cycle @ 1 kHz\nconstexpr double kForceFilterAlpha = 0.5;\nconstexpr double kTorqueFilterAlpha = 0.5;\n\n// Startup wrench bias: fixed after startup; no online adaptation.\nconstexpr int kBiasSamplesRequired = 500;\n\n// Virtuose API scaling\nconstexpr float kVirtuoseForceFactor = 1.0f;\nconstexpr float kVirtuoseSpeedFactor = 1.0f;\n\n// Analogue trigger\nconstexpr std::size_t kStiffnessAnalogChannel = 0;\nconstexpr double kAnalogReleasedValue = 0.0;\nconstexpr double kAnalogFullyPressedValue = 1.0;\nconstexpr double kAnalogLowDeadzone = 0.03;\nconstexpr double kAnalogFilterTimeConstantS = 0.030;\n\n// Slave translational stiffness command\nconstexpr double kMinimumTranslationalStiffness = 300.0;  // N/m\nconstexpr double kMaximumTranslationalStiffness = 700.0;  // N/m\n\n// Console\nconstexpr int kConsolePrintEveryCycles = 200;\n\n}  // namespace"
+      },
+      "Slave/slave_config.hpp": {
+        "sha256": "2b4cd8cfe6e9763085fab52ec6b1e0eccebcd5189ce8bb33353bad3c5d14a52a",
+        "text": "#pragma once\n\n#include <array>\n#include <cstdint>\n\n#include \"teleop_common.hpp\"\n\nnamespace {\n\n// Communication\nconstexpr double kControlRateHz = 1000.0;\nconstexpr uint64_t kMasterStaleNs = 50ULL * 1000ULL * 1000ULL;\nconstexpr int kFeedbackSendPeriodUs = 1000;\nconstexpr int kReceiveIdleSleepUs = 100;\n\n// Translational impedance\nconstexpr double kMinimumTranslationalStiffness = 300.0;   // N/m\nconstexpr double kBaselineTranslationalStiffness = 500.0;  // N/m\nconstexpr double kMaximumTranslationalStiffness = 700.0;   // N/m\nconstexpr double kBaselineTranslationalDamping = 20.0;     // Ns/m\nconstexpr double kMaximumStiffnessRate = 200.0;            // N/m/s\n\n// Rotational impedance\nconstexpr double kMinimumRotationalStiffness = 40.0;       // Nm/rad\nconstexpr double kBaselineRotationalStiffness = 80.0;      // Nm/rad\nconstexpr double kMaximumRotationalStiffness = 80.0;       // Nm/rad\nconstexpr double kBaselineRotationalDamping = 0.5;         // Nms/rad\nconstexpr double kMaximumRotationalStiffnessRate = 20.0;   // Nm/rad/s\n\n// Forward teleoperation\nconstexpr bool kEnableTranslationFollowing = true;\nconstexpr bool kEnableRotationFollowing = false;\nconstexpr double kPositionScaleX = 1.0;\nconstexpr double kPositionScaleY = 1.0;\nconstexpr double kPositionScaleZ = 1.0;\nconstexpr double kMaxTranslationPerAxisM = 0.80;\nconstexpr double kMaxRelativeRotationRad = 60.0 * kPi / 180.0;\nconstexpr double kMaxDesiredLinearSpeedMps = 1.50;\nconstexpr double kMaxDesiredAngularSpeedRadps = 120.0 * kPi / 180.0;\n\n// Joint-velocity soft guard.\n// These are Franka's suggested conservative rectangular FR3 velocity limits.\n// The guard starts before those values are reached and smoothly removes the\n// Cartesian tracking drive as measured joint speed approaches the stop ratio.\nconstexpr std::array<double, 7> kJointVelocityGuardLimitsRadps = {\n    2.0,\n    1.0,\n    1.5,\n    1.25,\n    3.0,\n    1.5,\n    3.0};\nconstexpr double kJointVelocityGuardStartRatio = 0.70;\nconstexpr double kJointVelocityGuardStopRatio = 0.85;\n\n// Nullspace / numerical regularization\nconstexpr double kNullspaceStiffness = 8.0;\nconstexpr double kNullspaceDamping = 2.5;\nconstexpr double kDampedInverseLambda = 0.05;\n\n// Torque / callback limits\nconstexpr double kMaxDeltaTorquePerCycleNm = 1.0;\nconstexpr double kMinimumCallbackDtS = 0.0005;\n\n// Franka startup\nconstexpr std::array<double, 7> kInitialJointConfiguration = {\n    0.0,\n    -kPi / 4.0,\n    0.0,\n    -3.0 * kPi / 4.0,\n    0.0,\n    kPi / 2.0,\n    kPi / 4.0};\n\nconstexpr double kInitialMotionSpeedFactor = 0.35;\nconstexpr double kCollisionThreshold = 35.0;\n\n}  // namespace"
+      },
+      "Master/masterv.cpp": {
+        "sha256": "0c66770c374ea348bd766c5998901c0142aa3fb81197a059832fe622bec07ae9"
+      },
+      "Slave/slavev.cpp": {
+        "sha256": "51a288a3dc6cf81922ea9a80534884cedf784e4a886ca48fa4814b47db458150"
+      }
+    },
+    "head": "085cbc9317c1a2484677f3ccfe0a5fd56d653faa",
+    "branch": "development",
+    "status": "M Master/master_config.hpp\n M Master/masterv.cpp\n M Slave/slave_config.hpp\n M Slave/slavev.cpp\n?? logs/\n?? teleop_logger.py"
+  }
+}

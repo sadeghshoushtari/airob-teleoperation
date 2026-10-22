@@ -38,6 +38,16 @@ using Vector7d = Eigen::Matrix<double, 7, 1>;
 using Matrix6d = Eigen::Matrix<double, 6, 6>;
 using Matrix7d = Eigen::Matrix<double, 7, 7>;
 using Matrix67d = Eigen::Matrix<double, 6, 7>;
+
+double smoothstep_between(double value, double start, double end) {
+  if (!std::isfinite(value) || end <= start) {
+    return 0.0;
+  }
+
+  const double x =
+      std::clamp((value - start) / (end - start), 0.0, 1.0);
+  return x * x * (3.0 - 2.0 * x);
+}
 }
 
 int main(int argc, char** argv) {
@@ -222,6 +232,23 @@ int main(int argc, char** argv) {
           Eigen::Map<const Vector7d> coriolis(coriolis_array.data());
           Eigen::Map<const Vector7d> q(state.q.data());
           Eigen::Map<const Vector7d> dq(state.dq.data());
+
+          double maximum_joint_velocity_ratio = 0.0;
+          for (std::size_t i = 0; i < 7; ++i) {
+            const double limit = kJointVelocityGuardLimitsRadps[i];
+            if (limit > 1e-12) {
+              maximum_joint_velocity_ratio = std::max(
+                  maximum_joint_velocity_ratio,
+                  std::abs(dq[static_cast<int>(i)]) / limit);
+            }
+          }
+
+          const double joint_velocity_guard = smoothstep_between(
+              maximum_joint_velocity_ratio,
+              kJointVelocityGuardStartRatio,
+              kJointVelocityGuardStopRatio);
+          const double joint_velocity_motion_scale =
+              1.0 - joint_velocity_guard;
 
           Eigen::Affine3d transform(
               Eigen::Matrix4d::Map(state.O_T_EE.data()));
@@ -500,6 +527,35 @@ int main(int argc, char** argv) {
             desired_angular_velocity.setZero();
           }
 
+          // Joint-velocity soft guard. In normal operation the scale is 1.
+          // As any joint approaches the conservative FR3 velocity envelope,
+          // smoothly pull the desired Cartesian state back toward the measured
+          // state and reduce the desired angular velocity. This removes stored
+          // tracking error instead of merely slowing future reference steps.
+          if (active &&
+              reference_ready &&
+              joint_velocity_motion_scale < 1.0) {
+            desired_position =
+                position +
+                joint_velocity_motion_scale *
+                    (desired_position - position);
+
+            Eigen::Quaterniond guarded_desired_orientation =
+                desired_orientation;
+            if (orientation.coeffs().dot(
+                    guarded_desired_orientation.coeffs()) < 0.0) {
+              guarded_desired_orientation.coeffs() *= -1.0;
+            }
+
+            desired_orientation = orientation.slerp(
+                joint_velocity_motion_scale,
+                guarded_desired_orientation);
+            desired_orientation.normalize();
+
+            desired_angular_velocity *=
+                joint_velocity_motion_scale;
+          }
+
           previous_active = active;
 
           const Eigen::Vector3d position_error =
@@ -553,7 +609,8 @@ int main(int argc, char** argv) {
 
           const Vector7d nullspace_torque =
               nullspace_projector *
-              (kNullspaceStiffness *
+              (joint_velocity_motion_scale *
+                   kNullspaceStiffness *
                    (q_goal_eigen - q) -
                kNullspaceDamping * dq);
 
