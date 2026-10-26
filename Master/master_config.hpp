@@ -78,8 +78,10 @@ constexpr double kDeviceTorqueCeilingNm = 1.5;
 // Contact saturation hold.
 // This does not change the baseline wrench calculation. If the already
 // rendered baseline command reaches a device ceiling during detected contact,
-// only the command sent to the Virtuose is held at that ceiling. The hold is
-// released immediately when the existing contact detector returns to zero.
+// only the command sent to the Virtuose is held at that ceiling. The force or
+// torque direction is captured at the instant saturation is reached and kept
+// fixed for that contact episode. The hold is released immediately when the
+// existing contact detector returns to zero.
 constexpr bool kEnableContactSaturationHold = true;
 constexpr double kMaxForceStepN = 0.075;    // N/cycle @ 1 kHz
 constexpr double kMaxTorqueStepNm = 0.010;  // Nm/cycle @ 1 kHz
@@ -106,6 +108,14 @@ constexpr double kAnalogFilterTimeConstantS = 0.030;
 // Slave translational stiffness command
 constexpr double kMinimumTranslationalStiffness = 300.0;  // N/m
 constexpr double kMaximumTranslationalStiffness = 700.0;  // N/m
+
+// Diagnostic telemetry for the final validation logger.
+// Logging-only path: never used by the Slave and never read back by control.
+// 100 Hz at the current 1 kHz controller rate keeps timing overhead small.
+constexpr bool kEnableDiagnosticTelemetry = true;
+constexpr int kDiagnosticTelemetryPort = 11057;
+constexpr int kDiagnosticTelemetryDecimation = 10;
+constexpr std::size_t kDiagnosticTelemetryPacketSize = 106;
 
 // Console
 constexpr int kConsolePrintEveryCycles = 200;

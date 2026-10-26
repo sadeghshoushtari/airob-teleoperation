@@ -1,6 +1,7 @@
 // master_bilateral_variable_impedance.cpp
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <csignal>
@@ -165,12 +166,55 @@ int main() {
     return 1;
   }
 
+  // Logging-only diagnostic telemetry socket.
+  // Failure here must never prevent teleoperation from starting.
+  int diagnostic_socket = -1;
+  sockaddr_in diagnostic_address{};
+
+  if (kEnableDiagnosticTelemetry) {
+    diagnostic_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (diagnostic_socket < 0) {
+      std::perror("diagnostic socket");
+    } else {
+      const int diagnostic_flags = fcntl(diagnostic_socket, F_GETFL, 0);
+      if (diagnostic_flags < 0 ||
+          fcntl(
+              diagnostic_socket,
+              F_SETFL,
+              diagnostic_flags | O_NONBLOCK) < 0) {
+        std::perror("diagnostic fcntl");
+        close(diagnostic_socket);
+        diagnostic_socket = -1;
+      } else {
+        diagnostic_address.sin_family = AF_INET;
+        diagnostic_address.sin_port = htons(kDiagnosticTelemetryPort);
+
+        if (inet_pton(
+                AF_INET,
+                kLoopbackIp,
+                &diagnostic_address.sin_addr) != 1) {
+          std::cerr
+              << "WARNING: diagnostic telemetry disabled: invalid loopback IP.\n";
+          close(diagnostic_socket);
+          diagnostic_socket = -1;
+        }
+      }
+    }
+
+    if (diagnostic_socket < 0) {
+      std::cerr
+          << "WARNING: diagnostic telemetry unavailable; "
+          << "teleoperation will continue normally.\n";
+    }
+  }
+
   const auto start_time = std::chrono::steady_clock::now();
   auto next_tick = std::chrono::steady_clock::now();
   auto previous_loop_time = next_tick;
   auto last_feedback_time = next_tick;
 
   uint64_t packet_id = 0;
+  uint64_t diagnostic_packet_id = 0;
   double feedback[kFeedbackPacketSize]{};
   bool feedback_received = false;
   bool deadman_release_seen = false;
@@ -442,6 +486,8 @@ int main() {
 
     Eigen::Vector3d corrected_torque_franka =
         torque_franka;
+    Eigen::Vector3d estimated_force_induced_moment =
+        Eigen::Vector3d::Zero();
 
     if (kEnableMomentCompensation) {
       const Eigen::Vector3d compensation_vector_O(
@@ -449,7 +495,7 @@ int main() {
           kMomentCompensationVectorO[1],
           kMomentCompensationVectorO[2]);
 
-      const Eigen::Vector3d estimated_force_induced_moment =
+      estimated_force_induced_moment =
           compensation_vector_O.cross(force_franka);
 
       corrected_torque_franka -=
@@ -681,6 +727,12 @@ int main() {
         rendered_wrench.tail<3>().norm();
 
     if (!saturation_hold_allowed) {
+      if (force_saturation_hold) {
+        std::cerr << "\n[FORCE SATURATION HOLD RELEASED]\n";
+      }
+      if (torque_saturation_hold) {
+        std::cerr << "\n[TORQUE SATURATION HOLD RELEASED]\n";
+      }
       force_saturation_hold = false;
       torque_saturation_hold = false;
     } else {
@@ -700,27 +752,23 @@ int main() {
         std::cerr << "\n[TORQUE SATURATION HOLD ACTIVE]\n";
       }
 
-      // Follow the current baseline command direction whenever it is valid.
-      // If the baseline vector becomes numerically tiny during contact, keep
-      // the last valid direction instead of normalizing noise.
+      // Hold the direction captured at the instant saturation was first
+      // reached. Do NOT update it from the underlying baseline command while
+      // the hold is active: that command can fall close to zero during contact,
+      // making its instantaneous direction dominated by estimator/controller
+      // noise. Only the magnitude is held at the device ceiling.
       if (force_saturation_hold) {
-        if (rendered_force_norm > 1e-6) {
-          force_saturation_hold_direction =
-              rendered_wrench.head<3>() / rendered_force_norm;
-        }
         commanded_wrench.head<3>() =
             kDeviceForceCeilingN * force_saturation_hold_direction;
       }
 
       if (torque_saturation_hold) {
-        if (rendered_torque_norm > 1e-6) {
-          torque_saturation_hold_direction =
-              rendered_wrench.tail<3>() / rendered_torque_norm;
-        }
         commanded_wrench.tail<3>() =
             kDeviceTorqueCeilingNm * torque_saturation_hold_direction;
       }
     }
+
+    bool virtuose_command_applied = false;
 
     if (backward_active && backward_reference_ready) {
       float wrench[6];
@@ -730,13 +778,109 @@ int main() {
 
       if (virtSetForce(context, wrench) != 0) {
         zero_wrench(context);
+        commanded_wrench.setZero();
+      } else {
+        virtuose_command_applied = true;
       }
     } else {
       zero_wrench(context);
       filtered_wrench.setZero();
       rendered_wrench.setZero();
+      commanded_wrench.setZero();
       force_saturation_hold = false;
       torque_saturation_hold = false;
+    }
+
+    // ------------------------------------------------------------
+    // LOGGING-ONLY DIAGNOSTIC TELEMETRY
+    //
+    // A separate loopback UDP packet is emitted at 100 Hz by default.
+    // It is never consumed by the Slave and never feeds back into control.
+    // The socket is nonblocking and send failures are intentionally ignored.
+    // ------------------------------------------------------------
+    if (diagnostic_socket >= 0 &&
+        kDiagnosticTelemetryDecimation > 0 &&
+        (packet_id %
+         static_cast<uint64_t>(kDiagnosticTelemetryDecimation)) == 0U) {
+      std::array<double, kDiagnosticTelemetryPacketSize>
+          diagnostic_packet{};
+      std::size_t diagnostic_index = 0;
+
+      const auto append_scalar = [&](double value) {
+        if (diagnostic_index < diagnostic_packet.size()) {
+          diagnostic_packet[diagnostic_index++] = value;
+        }
+      };
+
+      const auto append_vector3 = [&](const Eigen::Vector3d& value) {
+        append_scalar(value[0]);
+        append_scalar(value[1]);
+        append_scalar(value[2]);
+      };
+
+      const auto append_vector6 = [&](const Vector6d& value) {
+        for (int i = 0; i < 6; ++i) {
+          append_scalar(value[i]);
+        }
+      };
+
+      append_scalar(static_cast<double>(diagnostic_packet_id));
+      append_scalar(static_cast<double>(packet_id));
+      append_scalar(elapsed_us(start_time));
+
+      append_scalar(backward_active ? 1.0 : 0.0);
+      append_scalar(backward_reference_ready ? 1.0 : 0.0);
+      append_scalar(bias_ready ? 1.0 : 0.0);
+      append_scalar(static_cast<double>(bias_count));
+      append_scalar(force_safe ? 1.0 : 0.0);
+      append_scalar(torque_safe ? 1.0 : 0.0);
+      append_scalar(api_ok ? 1.0 : 0.0);
+      append_scalar(contact_active ? 1.0 : 0.0);
+      append_scalar(torque_reflection_contact_weight);
+      append_scalar(effective_torque_reflection_gain);
+      append_scalar(force_saturation_hold ? 1.0 : 0.0);
+      append_scalar(torque_saturation_hold ? 1.0 : 0.0);
+      append_scalar(virtuose_command_applied ? 1.0 : 0.0);
+      append_scalar(current_analog_normalized);
+      append_scalar(current_master_translational_stiffness_applied);
+      append_scalar(current_master_rotational_stiffness_applied);
+      append_scalar(current_master_translational_damping_applied);
+      append_scalar(current_master_rotational_damping_applied);
+      append_scalar(feedback_age_ms);
+
+      append_vector6(raw_wrench);
+      append_vector6(wrench_bias);
+      append_vector6(debiased_wrench);
+      append_vector3(estimated_force_induced_moment);
+      append_vector3(corrected_torque_franka);
+
+      append_vector3(force_mapped);
+      append_vector3(torque_mapped);
+
+      append_vector6(sync_wrench);
+      append_vector6(reflection_wrench);
+      append_vector6(directional_wrench);
+      append_vector6(desired_wrench);
+      append_vector6(filtered_wrench);
+      append_vector6(rendered_wrench);
+      append_vector6(commanded_wrench);
+
+      append_vector3(virtuose_linear_velocity);
+      append_vector3(virtuose_angular_velocity);
+      append_vector3(franka_linear_velocity_mapped);
+      append_vector3(franka_angular_velocity_mapped);
+
+      if (diagnostic_index == diagnostic_packet.size()) {
+        (void)sendto(
+            diagnostic_socket,
+            diagnostic_packet.data(),
+            diagnostic_packet.size() * sizeof(double),
+            MSG_DONTWAIT,
+            reinterpret_cast<sockaddr*>(&diagnostic_address),
+            sizeof(diagnostic_address));
+      }
+
+      ++diagnostic_packet_id;
     }
 
     const double command_packet[kCommandPacketSize] = {
@@ -802,6 +946,9 @@ int main() {
   virtSetPowerOn(context, 0);
   close(feedback_socket);
   close(command_socket);
+  if (diagnostic_socket >= 0) {
+    close(diagnostic_socket);
+  }
   virtClose(context);
   return 0;
 }
