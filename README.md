@@ -1,8 +1,8 @@
 # AIROB Bilateral Tele-Impedance Control
 
-Research code for a Master's thesis on **bilateral 6-DoF teleoperation and tele-impedance control** using a **Haption VIRTUOSE 6D TAO High Force** haptic device as the master and a **Franka Research 3 (FR3)** as the slave manipulator.
+Controller code of my Master's thesis on bilateral 6-DoF teleoperation and tele-impedance control. A Haption VIRTUOSE 6D TAO High Force haptic device is the master and a Franka Research 3 (FR3) arm is the slave. The operator moves the robot through the VIRTUOSE, feels the contact forces and torques measured at the robot, and changes the robot's Cartesian stiffness online.
 
-> **Reviewer note:** `main` is the current validated working version of the bilateral controller. It was promoted from the final `contact-saturation-hold` validation state after successful hardware testing. The earlier `baseline` and `development` branches are retained as historical checkpoints.
+`main` holds the controller as validated on the hardware. The sensor side of the thesis (measuring the operator's arm stiffness with a wearable elastography device) is in [fr3-hand-stiffness-perturbation](https://github.com/sadeghshoushtari/fr3-hand-stiffness-perturbation).
 
 ## Research objective
 
@@ -12,9 +12,7 @@ The project investigates bilateral teleoperation in which:
 - interaction forces and moments measured/estimated at the FR3 are rendered back to the operator,
 - Cartesian impedance can be varied online,
 - translational and rotational impedance are treated separately, and
-- future work will replace the manual stiffness input with a sensor-based estimate of human arm stiffness.
-
-The current controller is a research baseline for the later sensor-driven tele-impedance work.
+- the manual stiffness input is later replaced by an estimate of the operator's arm stiffness from a wearable sensor.
 
 ## Hardware
 
@@ -111,9 +109,7 @@ r_fit = [0.405, 0.071, 0.205] m
 
 expressed in the Franka O frame.
 
-This vector is an **identified compensation parameter**, not a claim about the physical tool geometry.
-
-The compensation substantially reduced spurious rotational feedback and is part of the current validated `main` controller.
+The vector is fitted from the data, not taken from the tool geometry. With the compensation, the spurious rotational feedback became much smaller; it is part of the validated controller on `main`.
 
 ## Repository structure
 
@@ -364,13 +360,13 @@ mechanical muscle sensing (vibration / elastography)
        robot impedance command
 ```
 
-The sensor code is being developed separately before it is given control authority over the teleoperation system. The current analogue trigger remains the controlled fallback/reference input.
+The sensor code is developed and tested separately ([fr3-hand-stiffness-perturbation](https://github.com/sadeghshoushtari/fr3-hand-stiffness-perturbation)) before it commands the robot's stiffness. Until then the analogue trigger stays the stiffness input and remains the fallback.
 
 A later stage will investigate formal passivity supervision for time-varying impedance.
 
-## Experimental philosophy
+## Development approach
 
-The controller is developed incrementally:
+The controller was developed in small steps:
 
 1. preserve a known working bilateral baseline,
 2. change one mechanism at a time,
@@ -378,8 +374,6 @@ The controller is developed incrementally:
 4. validate free-space behavior before contact,
 5. keep translational and rotational effects distinguishable, and
 6. move experimental additions to separate branches until validated.
-
-This is intentional. In bilateral haptic control, adding several apparently reasonable features at once is an efficient way to produce an unstable system and an inefficient way to discover why.
 
 ## License / reuse
 
