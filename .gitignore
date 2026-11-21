@@ -22,3 +22,7 @@ cmake-build-*/
 Master/masterv
 Slave/slavev
 logs/
+
+# Tele-impedance executables
+MasterTeleImpedance/master_ti
+SlaveTeleImpedance/slave_ti

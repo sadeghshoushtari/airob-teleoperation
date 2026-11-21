@@ -1,0 +1,938 @@
+// master_ti.cpp: the master of Master/masterv.cpp for tele-impedance. The VIRTUOSE trigger is not used: the
+// slave's stiffness comes from the operator's arm (MOSAIC -> SlaveTeleImpedance), and the backward coupling
+// follows the translational stiffness the slave applies (feedback[21]) over the same ranges as the trigger did:
+// 300..700 N/m -> 5..15 N/m and 0.5..1.5 Nm/rad. Everything else is unchanged.
+// master_bilateral_variable_impedance.cpp
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <csignal>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <iostream>
+#include <thread>
+
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <Eigen/Dense>
+#include <Eigen/Geometry>
+
+#include "virtuoseAPI.h"
+#include "teleop_common.hpp"
+#include "teleop_math.hpp"
+#include "master_config.hpp"
+#include "teleop_runtime.hpp"
+#include "master_runtime.hpp"
+
+namespace {
+using Vector6d = Eigen::Matrix<double, 6, 1>;
+
+double smoothstep_between(double value, double start, double end) {
+  if (!std::isfinite(value) || end <= start) {
+    return 0.0;
+  }
+
+  const double x =
+      std::clamp((value - start) / (end - start), 0.0, 1.0);
+  return x * x * (3.0 - 2.0 * x);
+}
+}
+
+int main() {
+  std::signal(SIGINT, sigint_handler);
+
+  const Eigen::Matrix3d v_to_f = create_frame_map();
+  const auto loop_period =
+      std::chrono::microseconds(static_cast<int>(1000000.0 / kLoopHz));
+
+  const auto interpolate = [](double minimum, double maximum, double alpha) {
+    return minimum + alpha * (maximum - minimum);
+  };
+
+  // Level of the slave's applied translational stiffness in its range (0 = 300 N/m, 1 = 700 N/m), from the
+  // feedback of the previous cycle; it sets the backward coupling as the trigger did.
+  double slave_stiffness_level = 0.0;
+  double slave_translational_stiffness_feedback = kMinimumTranslationalStiffness;
+
+  double current_master_translational_stiffness_command =
+      kMinimumBackwardPositionStiffness;
+  double current_master_rotational_stiffness_command =
+      kMinimumBackwardRotationStiffness;
+  double current_master_translational_stiffness_applied =
+      kMinimumBackwardPositionStiffness;
+  double current_master_rotational_stiffness_applied =
+      kMinimumBackwardRotationStiffness;
+  double current_master_translational_damping_applied =
+      kBaselineBackwardPositionDamping *
+      std::sqrt(kMinimumBackwardPositionStiffness /
+                kBaselineBackwardPositionStiffness);
+  double current_master_rotational_damping_applied =
+      kBaselineBackwardRotationDamping *
+      std::sqrt(kMinimumBackwardRotationStiffness /
+                kBaselineBackwardRotationStiffness);
+
+  VirtContext context = virtOpen("127.0.0.1#53210");
+  if (!context) {
+    std::cerr << "ERROR: virtOpen failed.\n";
+    return 1;
+  }
+
+  float identity_frame[7] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+  const auto setup_ok = [&](int result, const char* operation) {
+    if (result == 0) {
+      return true;
+    }
+    std::cerr << "ERROR: Virtuose setup failed at " << operation << '\n';
+    shutdown_virtuose(context);
+    return false;
+  };
+
+  if (!setup_ok(virtSetTimeoutValue(context, kVirtuoseApiTimeoutS),
+                "virtSetTimeoutValue") ||
+      !setup_ok(virtSetIndexingMode(context, INDEXING_ALL),
+                "virtSetIndexingMode") ||
+      !setup_ok(virtSetForceFactor(context, kVirtuoseForceFactor),
+                "virtSetForceFactor") ||
+      !setup_ok(virtSetSpeedFactor(context, kVirtuoseSpeedFactor),
+                "virtSetSpeedFactor") ||
+      !setup_ok(virtSetTimeStep(context, static_cast<float>(1.0 / kLoopHz)),
+                "virtSetTimeStep") ||
+      !setup_ok(virtSetBaseFrame(context, identity_frame), "virtSetBaseFrame") ||
+      !setup_ok(virtSetObservationFrame(context, identity_frame),
+                "virtSetObservationFrame") ||
+      !setup_ok(virtSetCommandType(context, COMMAND_TYPE_IMPEDANCE),
+                "virtSetCommandType") ||
+      !setup_ok(virtSaturateTorque(
+                    context,
+                    static_cast<float>(kDeviceForceCeilingN),
+                    static_cast<float>(kDeviceTorqueCeilingNm)),
+                "virtSaturateTorque") ||
+      !setup_ok(virtEnableForceFeedback(context, 1),
+                "virtEnableForceFeedback") ||
+      !setup_ok(virtSetPowerOn(context, 1), "virtSetPowerOn")) {
+    return 1;
+  }
+
+  const int command_socket = socket(AF_INET, SOCK_DGRAM, 0);
+  if (command_socket < 0) {
+    std::perror("command socket");
+    shutdown_virtuose(context);
+    return 1;
+  }
+
+  sockaddr_in slave_address{};
+  slave_address.sin_family = AF_INET;
+  slave_address.sin_port = htons(kCommandSendPort);
+  if (inet_pton(AF_INET, kSlaveIp, &slave_address.sin_addr) != 1) {
+    std::cerr << "ERROR: invalid slave IP.\n";
+    close(command_socket);
+    shutdown_virtuose(context);
+    return 1;
+  }
+
+  const int feedback_socket = socket(AF_INET, SOCK_DGRAM, 0);
+  if (feedback_socket < 0) {
+    std::perror("feedback socket");
+    close(command_socket);
+    shutdown_virtuose(context);
+    return 1;
+  }
+
+  int reuse = 1;
+  setsockopt(feedback_socket, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+  sockaddr_in feedback_address{};
+  feedback_address.sin_family = AF_INET;
+  feedback_address.sin_addr.s_addr = htonl(INADDR_ANY);
+  feedback_address.sin_port = htons(kFeedbackReceivePort);
+  if (bind(feedback_socket,
+           reinterpret_cast<sockaddr*>(&feedback_address),
+           sizeof(feedback_address)) < 0) {
+    std::perror("feedback bind");
+    close(feedback_socket);
+    close(command_socket);
+    shutdown_virtuose(context);
+    return 1;
+  }
+
+  const int feedback_flags = fcntl(feedback_socket, F_GETFL, 0);
+  if (feedback_flags < 0 ||
+      fcntl(feedback_socket, F_SETFL, feedback_flags | O_NONBLOCK) < 0) {
+    std::perror("feedback fcntl");
+    close(feedback_socket);
+    close(command_socket);
+    shutdown_virtuose(context);
+    return 1;
+  }
+
+  // Logging-only diagnostic telemetry socket.
+  // Failure here must never prevent teleoperation from starting.
+  int diagnostic_socket = -1;
+  sockaddr_in diagnostic_address{};
+
+  if (kEnableDiagnosticTelemetry) {
+    diagnostic_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (diagnostic_socket < 0) {
+      std::perror("diagnostic socket");
+    } else {
+      const int diagnostic_flags = fcntl(diagnostic_socket, F_GETFL, 0);
+      if (diagnostic_flags < 0 ||
+          fcntl(
+              diagnostic_socket,
+              F_SETFL,
+              diagnostic_flags | O_NONBLOCK) < 0) {
+        std::perror("diagnostic fcntl");
+        close(diagnostic_socket);
+        diagnostic_socket = -1;
+      } else {
+        diagnostic_address.sin_family = AF_INET;
+        diagnostic_address.sin_port = htons(kDiagnosticTelemetryPort);
+
+        if (inet_pton(
+                AF_INET,
+                kLoopbackIp,
+                &diagnostic_address.sin_addr) != 1) {
+          std::cerr
+              << "WARNING: diagnostic telemetry disabled: invalid loopback IP.\n";
+          close(diagnostic_socket);
+          diagnostic_socket = -1;
+        }
+      }
+    }
+
+    if (diagnostic_socket < 0) {
+      std::cerr
+          << "WARNING: diagnostic telemetry unavailable; "
+          << "teleoperation will continue normally.\n";
+    }
+  }
+
+  const auto start_time = std::chrono::steady_clock::now();
+  auto next_tick = std::chrono::steady_clock::now();
+  auto previous_loop_time = next_tick;
+  auto last_feedback_time = next_tick;
+
+  uint64_t packet_id = 0;
+  uint64_t diagnostic_packet_id = 0;
+  double feedback[kFeedbackPacketSize]{};
+  bool feedback_received = false;
+  bool deadman_release_seen = false;
+
+  Vector6d bias_sum = Vector6d::Zero();
+  Vector6d wrench_bias = Vector6d::Zero();
+  int bias_count = 0;
+  bool bias_ready = false;
+  bool bias_sampling_started = false;
+  bool bias_feedback_id_seen = false;
+  uint64_t last_bias_feedback_id = 0;
+
+  Vector6d filtered_wrench = Vector6d::Zero();
+  Vector6d rendered_wrench = Vector6d::Zero();
+
+  bool force_saturation_hold = false;
+  bool torque_saturation_hold = false;
+  Eigen::Vector3d force_saturation_hold_direction =
+      Eigen::Vector3d::UnitX();
+  Eigen::Vector3d torque_saturation_hold_direction =
+      Eigen::Vector3d::UnitX();
+
+  bool backward_reference_ready = false;
+  bool previous_backward_active = false;
+  Eigen::Vector3d virtuose_position_reference = Eigen::Vector3d::Zero();
+  Eigen::Vector3d franka_position_reference = Eigen::Vector3d::Zero();
+  Eigen::Quaterniond virtuose_orientation_reference =
+      Eigen::Quaterniond::Identity();
+  Eigen::Quaterniond franka_orientation_reference =
+      Eigen::Quaterniond::Identity();
+
+  int terminal_counter = 0;
+
+  while (!g_stop_requested) {
+    next_tick += loop_period;
+
+    const auto now = std::chrono::steady_clock::now();
+    const double loop_dt_ms =
+        std::chrono::duration<double, std::milli>(now - previous_loop_time)
+            .count();
+    previous_loop_time = now;
+
+    float pose[7]{};
+    float speed[6]{};
+    int deadman = 0;
+    int emergency_stop = 0;
+    int power = 0;
+    int indexing = 0;
+    unsigned int alarm = 0;
+
+    const int rc_pose = virtGetPosition(context, pose);
+    const int rc_speed = virtGetSpeed(context, speed);
+    current_master_translational_stiffness_command = interpolate(
+        kMinimumBackwardPositionStiffness,
+        kMaximumBackwardPositionStiffness,
+        slave_stiffness_level);
+    current_master_rotational_stiffness_command = interpolate(
+        kMinimumBackwardRotationStiffness,
+        kMaximumBackwardRotationStiffness,
+        slave_stiffness_level);
+
+    const double master_impedance_dt_s =
+        std::max(loop_dt_ms * 1e-3, 1.0 / kLoopHz);
+    current_master_translational_stiffness_applied = rate_limit(
+        current_master_translational_stiffness_command,
+        current_master_translational_stiffness_applied,
+        kMaximumBackwardPositionStiffnessRate * master_impedance_dt_s);
+    current_master_rotational_stiffness_applied = rate_limit(
+        current_master_rotational_stiffness_command,
+        current_master_rotational_stiffness_applied,
+        kMaximumBackwardRotationStiffnessRate * master_impedance_dt_s);
+    current_master_translational_damping_applied =
+        kBaselineBackwardPositionDamping *
+        std::sqrt(current_master_translational_stiffness_applied /
+                  kBaselineBackwardPositionStiffness);
+    current_master_rotational_damping_applied =
+        kBaselineBackwardRotationDamping *
+        std::sqrt(current_master_rotational_stiffness_applied /
+                  kBaselineBackwardRotationStiffness);
+
+    const int rc_deadman = virtGetDeadMan(context, &deadman);
+    const int rc_estop = virtGetEmergencyStop(context, &emergency_stop);
+    const int rc_power = virtGetPowerOn(context, &power);
+    const int rc_index = virtIsInShiftPosition(context, &indexing);
+    const int rc_alarm = virtGetAlarm(context, &alarm);
+
+    Eigen::Vector3d virtuose_position(
+        static_cast<double>(pose[0]),
+        static_cast<double>(pose[1]),
+        static_cast<double>(pose[2]));
+    Eigen::Quaterniond virtuose_orientation(
+        static_cast<double>(pose[6]),
+        static_cast<double>(pose[3]),
+        static_cast<double>(pose[4]),
+        static_cast<double>(pose[5]));
+    if (finite_quaternion(virtuose_orientation)) {
+      virtuose_orientation.normalize();
+    }
+
+    const Eigen::Vector3d virtuose_linear_velocity(
+        static_cast<double>(speed[0]),
+        static_cast<double>(speed[1]),
+        static_cast<double>(speed[2]));
+    const Eigen::Vector3d virtuose_angular_velocity(
+        static_cast<double>(speed[3]),
+        static_cast<double>(speed[4]),
+        static_cast<double>(speed[5]));
+
+    while (true) {
+      double candidate[kFeedbackPacketSize]{};
+      const ssize_t received = recvfrom(
+          feedback_socket,
+          reinterpret_cast<char*>(candidate),
+          sizeof(candidate),
+          0,
+          nullptr,
+          nullptr);
+
+      if (received != static_cast<ssize_t>(sizeof(candidate))) {
+        break;
+      }
+
+      std::memcpy(feedback, candidate, sizeof(feedback));
+      feedback_received = true;
+      last_feedback_time = now;
+    }
+
+    const double feedback_age_ms =
+        std::chrono::duration<double, std::milli>(now - last_feedback_time)
+            .count();
+    const bool feedback_live =
+        feedback_received && feedback_age_ms < kFeedbackStaleMs;
+
+    Eigen::Vector3d franka_position = Eigen::Vector3d::Zero();
+    Eigen::Quaterniond franka_orientation = Eigen::Quaterniond::Identity();
+    Eigen::Vector3d franka_linear_velocity = Eigen::Vector3d::Zero();
+    Eigen::Vector3d franka_angular_velocity = Eigen::Vector3d::Zero();
+
+    if (feedback_received) {
+      franka_position =
+          Eigen::Vector3d(feedback[8], feedback[9], feedback[10]);
+      franka_orientation = Eigen::Quaterniond(
+          feedback[11], feedback[12], feedback[13], feedback[14]);
+
+      if (finite_quaternion(franka_orientation)) {
+        franka_orientation.normalize();
+      }
+
+      franka_linear_velocity =
+          Eigen::Vector3d(feedback[15], feedback[16], feedback[17]);
+      franka_angular_velocity =
+          Eigen::Vector3d(feedback[18], feedback[19], feedback[20]);
+    }
+
+    const bool franka_pose_valid =
+        feedback_live &&
+        finite_vector3(franka_position) &&
+        finite_quaternion(franka_orientation) &&
+        finite_vector3(franka_linear_velocity) &&
+        finite_vector3(franka_angular_velocity);
+
+    Vector6d raw_wrench = Vector6d::Zero();
+    if (feedback_live) {
+      for (int i = 0; i < 6; ++i) {
+        raw_wrench[i] = feedback[2 + i];
+      }
+    }
+
+    const double feedback_source_time_us =
+        feedback_received ? feedback[1] : 0.0;
+
+    const bool feedback_source_time_valid =
+        feedback_live &&
+        std::isfinite(feedback_source_time_us) &&
+        feedback_source_time_us >= 0.0;
+
+    const bool franka_wrench_warmed_up =
+        feedback_source_time_valid &&
+        feedback_source_time_us >= kBiasWarmupS * 1e6;
+
+    bool new_bias_feedback_sample = false;
+    uint64_t current_feedback_id = 0;
+
+    if (franka_wrench_warmed_up &&
+        std::isfinite(feedback[0]) &&
+        feedback[0] >= 0.0) {
+      current_feedback_id =
+          static_cast<uint64_t>(std::llround(feedback[0]));
+
+      new_bias_feedback_sample =
+          !bias_feedback_id_seen ||
+          current_feedback_id != last_bias_feedback_id;
+    }
+
+    if (!bias_ready &&
+        franka_wrench_warmed_up &&
+        new_bias_feedback_sample &&
+        raw_wrench.allFinite()) {
+
+      if (!bias_sampling_started) {
+        bias_sampling_started = true;
+        std::cerr
+            << "\n[WRENCH BIAS SAMPLING STARTED] "
+            << "Franka source time="
+            << feedback_source_time_us * 1e-6
+            << " s\n";
+      }
+
+      bias_sum += raw_wrench;
+      ++bias_count;
+
+      last_bias_feedback_id = current_feedback_id;
+      bias_feedback_id_seen = true;
+
+      if (bias_count >= kBiasSamplesRequired) {
+        wrench_bias =
+            bias_sum / static_cast<double>(bias_count);
+        bias_ready = true;
+
+        std::cerr
+            << "\n[WRENCH BIAS READY] "
+            << "samples=" << bias_count
+            << " bias=["
+            << wrench_bias[0] << ", "
+            << wrench_bias[1] << ", "
+            << wrench_bias[2] << ", "
+            << wrench_bias[3] << ", "
+            << wrench_bias[4] << ", "
+            << wrench_bias[5] << "]\n";
+      }
+    }
+
+    Vector6d debiased_wrench = Vector6d::Zero();
+    if (feedback_live && bias_ready) {
+      debiased_wrench = raw_wrench - wrench_bias;
+    }
+
+    const Eigen::Vector3d force_franka =
+        debiased_wrench.head<3>();
+    const Eigen::Vector3d torque_franka =
+        debiased_wrench.tail<3>();
+
+    Eigen::Vector3d corrected_torque_franka =
+        torque_franka;
+    Eigen::Vector3d estimated_force_induced_moment =
+        Eigen::Vector3d::Zero();
+
+    if (kEnableMomentCompensation) {
+      const Eigen::Vector3d compensation_vector_O(
+          kMomentCompensationVectorO[0],
+          kMomentCompensationVectorO[1],
+          kMomentCompensationVectorO[2]);
+
+      estimated_force_induced_moment =
+          compensation_vector_O.cross(force_franka);
+
+      corrected_torque_franka -=
+          kMomentCompensationScale *
+          estimated_force_induced_moment;
+    }
+
+    const Eigen::Vector3d force_mapped =
+        v_to_f.transpose() * force_franka;
+    const Eigen::Vector3d torque_mapped =
+        v_to_f.transpose() * corrected_torque_franka;
+    const Eigen::Vector3d franka_linear_velocity_mapped =
+        v_to_f.transpose() * franka_linear_velocity;
+    const Eigen::Vector3d franka_angular_velocity_mapped =
+        v_to_f.transpose() * franka_angular_velocity;
+
+    const double franka_translational_stiffness_applied =
+        feedback_received ? feedback[21] : 0.0;
+    if (feedback_received && std::isfinite(feedback[21]) && feedback[21] > 0.0) {
+      slave_translational_stiffness_feedback = feedback[21];
+      slave_stiffness_level = clamp_scalar(
+          (feedback[21] - kMinimumTranslationalStiffness) /
+              (kMaximumTranslationalStiffness - kMinimumTranslationalStiffness),
+          0.0,
+          1.0);
+    }
+    const double franka_rotational_stiffness_applied =
+        feedback_received ? feedback[22] : 0.0;
+
+    const bool api_ok =
+        rc_pose == 0 &&
+        rc_speed == 0 &&
+        rc_deadman == 0 &&
+        rc_estop == 0 &&
+        rc_power == 0 &&
+        rc_index == 0 &&
+        rc_alarm == 0;
+
+    if (api_ok && deadman == 0) {
+      deadman_release_seen = true;
+    }
+
+    const bool force_safe = bias_ready && finite_vector3(force_mapped);
+    const bool torque_safe = bias_ready && finite_vector3(torque_mapped);
+    const bool backward_active =
+        api_ok &&
+        feedback_live &&
+        franka_pose_valid &&
+        finite_vector3(virtuose_position) &&
+        finite_quaternion(virtuose_orientation) &&
+        finite_vector3(virtuose_linear_velocity) &&
+        finite_vector3(virtuose_angular_velocity) &&
+        deadman_release_seen &&
+        deadman == 1 &&
+        emergency_stop == 1 &&
+        power == 1 &&
+        indexing == 0;
+
+    if (backward_active && !previous_backward_active) {
+      virtuose_position_reference = virtuose_position;
+      franka_position_reference = franka_position;
+      virtuose_orientation_reference = virtuose_orientation;
+      franka_orientation_reference = franka_orientation;
+      backward_reference_ready = true;
+      filtered_wrench.setZero();
+      rendered_wrench.setZero();
+      std::cerr << "\n[BACKWARD REFERENCE CAPTURED]\n";
+    }
+
+    if (!backward_active) {
+      backward_reference_ready = false;
+    }
+    previous_backward_active = backward_active;
+
+    Vector6d sync_wrench = Vector6d::Zero();
+    if (backward_active && backward_reference_ready) {
+      if (kEnableBackwardPositionCoupling) {
+        const Eigen::Vector3d franka_delta =
+            franka_position - franka_position_reference;
+        const Eigen::Vector3d target_position =
+            virtuose_position_reference + v_to_f.transpose() * franka_delta;
+        const Eigen::Vector3d position_error = clamp_vector_norm(
+            target_position - virtuose_position,
+            kMaxBackwardPositionErrorM);
+
+        sync_wrench.head<3>() =
+            current_master_translational_stiffness_applied * position_error +
+            current_master_translational_damping_applied *
+                (franka_linear_velocity_mapped - virtuose_linear_velocity);
+      }
+
+      if (kEnableBackwardRotationCoupling) {
+        const Eigen::Matrix3d franka_delta_rotation =
+            franka_orientation.toRotationMatrix() *
+            franka_orientation_reference.toRotationMatrix().transpose();
+        const Eigen::Matrix3d target_rotation =
+            (v_to_f.transpose() * franka_delta_rotation * v_to_f) *
+            virtuose_orientation_reference.toRotationMatrix();
+
+        Eigen::Quaterniond target_orientation(target_rotation);
+        target_orientation.normalize();
+
+        const Eigen::Vector3d rotation_error = clamp_vector_norm(
+            orientation_error_world(virtuose_orientation, target_orientation),
+            kMaxBackwardRotationErrorRad);
+
+        if (rotation_error.norm() > kMinBackwardRotationErrorRad) {
+          sync_wrench.tail<3>() =
+              current_master_rotational_stiffness_applied * rotation_error +
+              current_master_rotational_damping_applied *
+                  (franka_angular_velocity_mapped -
+                   virtuose_angular_velocity);
+        }
+      }
+    }
+
+    Vector6d reflection_wrench = Vector6d::Zero();
+    double torque_reflection_contact_weight = 0.0;
+    double effective_torque_reflection_gain = 0.0;
+
+    if (kEnableForceReflection && force_safe) {
+      reflection_wrench.head<3>() =
+          -kForceReflectionGain * force_mapped;
+    }
+
+    if (kEnableTorqueReflection && torque_safe) {
+      const double force_contact_weight =
+          force_safe
+              ? smoothstep_between(
+                    force_mapped.norm(),
+                    kTorqueReflectionForceRampStartN,
+                    kTorqueReflectionForceRampEndN)
+              : 0.0;
+
+      const double torque_contact_weight =
+          smoothstep_between(
+              torque_mapped.norm(),
+              kTorqueReflectionMomentRampStartNm,
+              kTorqueReflectionMomentRampEndNm);
+
+      torque_reflection_contact_weight =
+          std::max(force_contact_weight, torque_contact_weight);
+
+      effective_torque_reflection_gain =
+          kMinimumTorqueReflectionGain +
+          torque_reflection_contact_weight *
+              (kMaximumTorqueReflectionGain -
+               kMinimumTorqueReflectionGain);
+
+      reflection_wrench.tail<3>() =
+          -effective_torque_reflection_gain * torque_mapped;
+    }
+
+    Vector6d directional_wrench = Vector6d::Zero();
+    if (kEnableDirectionalForceDamping && force_safe) {
+      const double force_norm = force_mapped.norm();
+      if (force_norm > kDirectionalForceThresholdN) {
+        const Eigen::Vector3d direction = force_mapped / force_norm;
+        directional_wrench.head<3>() =
+            -kDirectionalLinearDamping *
+            direction * virtuose_linear_velocity.dot(direction);
+      }
+    }
+
+    if (kEnableDirectionalTorqueDamping && torque_safe) {
+      const double torque_norm = torque_mapped.norm();
+      if (torque_norm > kDirectionalTorqueThresholdNm) {
+        const Eigen::Vector3d direction = torque_mapped / torque_norm;
+        directional_wrench.tail<3>() =
+            -kDirectionalAngularDamping *
+            direction * virtuose_angular_velocity.dot(direction);
+      }
+    }
+
+    Vector6d desired_wrench = Vector6d::Zero();
+    if (backward_active && backward_reference_ready) {
+      desired_wrench = sync_wrench + reflection_wrench + directional_wrench;
+    }
+
+    filtered_wrench.head<3>() =
+        kForceFilterAlpha * desired_wrench.head<3>() +
+        (1.0 - kForceFilterAlpha) * filtered_wrench.head<3>();
+    filtered_wrench.tail<3>() =
+        kTorqueFilterAlpha * desired_wrench.tail<3>() +
+        (1.0 - kTorqueFilterAlpha) * filtered_wrench.tail<3>();
+
+    for (int i = 0; i < 3; ++i) {
+      rendered_wrench[i] =
+          rate_limit(filtered_wrench[i], rendered_wrench[i], kMaxForceStepN);
+      rendered_wrench[3 + i] = rate_limit(
+          filtered_wrench[3 + i],
+          rendered_wrench[3 + i],
+          kMaxTorqueStepNm);
+    }
+
+    rendered_wrench.head<3>() = clamp_vector_norm(
+        Eigen::Vector3d(rendered_wrench.head<3>()),
+        kDeviceForceCeilingN);
+    rendered_wrench.tail<3>() = clamp_vector_norm(
+        Eigen::Vector3d(rendered_wrench.tail<3>()),
+        kDeviceTorqueCeilingNm);
+
+    // ------------------------------------------------------------
+    // CONTACT SATURATION HOLD
+    //
+    // IMPORTANT:
+    //   rendered_wrench remains the verified baseline controller state.
+    //   The hold changes only commanded_wrench, which is sent to the
+    //   Virtuose. Therefore releasing contact immediately returns to the
+    //   normal baseline output instead of leaving a saturated state inside
+    //   the filter/slew limiter.
+    //
+    //   - Enter force hold only after the baseline force has actually
+    //     reached the 30 N device ceiling.
+    //   - Enter torque hold only after the baseline torque has actually
+    //     reached the 1.5 Nm device ceiling.
+    //   - Keep the held magnitude while the existing contact detector is
+    //     active.
+    //   - Release both holds as soon as that contact detector returns to 0.
+    // ------------------------------------------------------------
+
+    Vector6d commanded_wrench = rendered_wrench;
+
+    const bool contact_active =
+        torque_reflection_contact_weight > 0.0;
+
+    const bool saturation_hold_allowed =
+        kEnableContactSaturationHold &&
+        backward_active &&
+        backward_reference_ready &&
+        contact_active;
+
+    const double rendered_force_norm =
+        rendered_wrench.head<3>().norm();
+    const double rendered_torque_norm =
+        rendered_wrench.tail<3>().norm();
+
+    if (!saturation_hold_allowed) {
+      if (force_saturation_hold) {
+        std::cerr << "\n[FORCE SATURATION HOLD RELEASED]\n";
+      }
+      if (torque_saturation_hold) {
+        std::cerr << "\n[TORQUE SATURATION HOLD RELEASED]\n";
+      }
+      force_saturation_hold = false;
+      torque_saturation_hold = false;
+    } else {
+      if (!force_saturation_hold &&
+          rendered_force_norm >= kDeviceForceCeilingN - 1e-9) {
+        force_saturation_hold = true;
+        force_saturation_hold_direction =
+            rendered_wrench.head<3>() / rendered_force_norm;
+        std::cerr << "\n[FORCE SATURATION HOLD ACTIVE]\n";
+      }
+
+      if (!torque_saturation_hold &&
+          rendered_torque_norm >= kDeviceTorqueCeilingNm - 1e-9) {
+        torque_saturation_hold = true;
+        torque_saturation_hold_direction =
+            rendered_wrench.tail<3>() / rendered_torque_norm;
+        std::cerr << "\n[TORQUE SATURATION HOLD ACTIVE]\n";
+      }
+
+      // Hold the direction captured at the instant saturation was first
+      // reached. Do NOT update it from the underlying baseline command while
+      // the hold is active: that command can fall close to zero during contact,
+      // making its instantaneous direction dominated by estimator/controller
+      // noise. Only the magnitude is held at the device ceiling.
+      if (force_saturation_hold) {
+        commanded_wrench.head<3>() =
+            kDeviceForceCeilingN * force_saturation_hold_direction;
+      }
+
+      if (torque_saturation_hold) {
+        commanded_wrench.tail<3>() =
+            kDeviceTorqueCeilingNm * torque_saturation_hold_direction;
+      }
+    }
+
+    bool virtuose_command_applied = false;
+
+    if (backward_active && backward_reference_ready) {
+      float wrench[6];
+      for (int i = 0; i < 6; ++i) {
+        wrench[i] = static_cast<float>(commanded_wrench[i]);
+      }
+
+      if (virtSetForce(context, wrench) != 0) {
+        zero_wrench(context);
+        commanded_wrench.setZero();
+      } else {
+        virtuose_command_applied = true;
+      }
+    } else {
+      zero_wrench(context);
+      filtered_wrench.setZero();
+      rendered_wrench.setZero();
+      commanded_wrench.setZero();
+      force_saturation_hold = false;
+      torque_saturation_hold = false;
+    }
+
+    // ------------------------------------------------------------
+    // LOGGING-ONLY DIAGNOSTIC TELEMETRY
+    //
+    // A separate loopback UDP packet is emitted at 100 Hz by default.
+    // It is never consumed by the Slave and never feeds back into control.
+    // The socket is nonblocking and send failures are intentionally ignored.
+    // ------------------------------------------------------------
+    if (diagnostic_socket >= 0 &&
+        kDiagnosticTelemetryDecimation > 0 &&
+        (packet_id %
+         static_cast<uint64_t>(kDiagnosticTelemetryDecimation)) == 0U) {
+      std::array<double, kDiagnosticTelemetryPacketSize>
+          diagnostic_packet{};
+      std::size_t diagnostic_index = 0;
+
+      const auto append_scalar = [&](double value) {
+        if (diagnostic_index < diagnostic_packet.size()) {
+          diagnostic_packet[diagnostic_index++] = value;
+        }
+      };
+
+      const auto append_vector3 = [&](const Eigen::Vector3d& value) {
+        append_scalar(value[0]);
+        append_scalar(value[1]);
+        append_scalar(value[2]);
+      };
+
+      const auto append_vector6 = [&](const Vector6d& value) {
+        for (int i = 0; i < 6; ++i) {
+          append_scalar(value[i]);
+        }
+      };
+
+      append_scalar(static_cast<double>(diagnostic_packet_id));
+      append_scalar(static_cast<double>(packet_id));
+      append_scalar(elapsed_us(start_time));
+
+      append_scalar(backward_active ? 1.0 : 0.0);
+      append_scalar(backward_reference_ready ? 1.0 : 0.0);
+      append_scalar(bias_ready ? 1.0 : 0.0);
+      append_scalar(static_cast<double>(bias_count));
+      append_scalar(force_safe ? 1.0 : 0.0);
+      append_scalar(torque_safe ? 1.0 : 0.0);
+      append_scalar(api_ok ? 1.0 : 0.0);
+      append_scalar(contact_active ? 1.0 : 0.0);
+      append_scalar(torque_reflection_contact_weight);
+      append_scalar(effective_torque_reflection_gain);
+      append_scalar(force_saturation_hold ? 1.0 : 0.0);
+      append_scalar(torque_saturation_hold ? 1.0 : 0.0);
+      append_scalar(virtuose_command_applied ? 1.0 : 0.0);
+      append_scalar(slave_stiffness_level);
+      append_scalar(current_master_translational_stiffness_applied);
+      append_scalar(current_master_rotational_stiffness_applied);
+      append_scalar(current_master_translational_damping_applied);
+      append_scalar(current_master_rotational_damping_applied);
+      append_scalar(feedback_age_ms);
+
+      append_vector6(raw_wrench);
+      append_vector6(wrench_bias);
+      append_vector6(debiased_wrench);
+      append_vector3(estimated_force_induced_moment);
+      append_vector3(corrected_torque_franka);
+
+      append_vector3(force_mapped);
+      append_vector3(torque_mapped);
+
+      append_vector6(sync_wrench);
+      append_vector6(reflection_wrench);
+      append_vector6(directional_wrench);
+      append_vector6(desired_wrench);
+      append_vector6(filtered_wrench);
+      append_vector6(rendered_wrench);
+      append_vector6(commanded_wrench);
+
+      append_vector3(virtuose_linear_velocity);
+      append_vector3(virtuose_angular_velocity);
+      append_vector3(franka_linear_velocity_mapped);
+      append_vector3(franka_angular_velocity_mapped);
+
+      if (diagnostic_index == diagnostic_packet.size()) {
+        (void)sendto(
+            diagnostic_socket,
+            diagnostic_packet.data(),
+            diagnostic_packet.size() * sizeof(double),
+            MSG_DONTWAIT,
+            reinterpret_cast<sockaddr*>(&diagnostic_address),
+            sizeof(diagnostic_address));
+      }
+
+      ++diagnostic_packet_id;
+    }
+
+    const double command_packet[kCommandPacketSize] = {
+        static_cast<double>(packet_id),
+        elapsed_us(start_time),
+        static_cast<double>(pose[6]),
+        static_cast<double>(pose[3]),
+        static_cast<double>(pose[4]),
+        static_cast<double>(pose[5]),
+        static_cast<double>(pose[0]),
+        static_cast<double>(pose[1]),
+        static_cast<double>(pose[2]),
+        kEnableForceReflection ? kForceReflectionGain : 0.0,
+        kEnableTorqueReflection ? effective_torque_reflection_gain : 0.0,
+        slave_translational_stiffness_feedback,  // not used by SlaveTeleImpedance (its stiffness comes from MOSAIC)
+        static_cast<double>(deadman),
+        static_cast<double>(emergency_stop)};
+
+    sendto(
+        command_socket,
+        command_packet,
+        sizeof(command_packet),
+        0,
+        reinterpret_cast<sockaddr*>(&slave_address),
+        sizeof(slave_address));
+    ++packet_id;
+
+    if (++terminal_counter >= kConsolePrintEveryCycles) {
+      terminal_counter = 0;
+      std::fprintf(
+          stderr,
+          "[MASTER-TI] active=%d level=%.2f "
+          "Slave Kt=%.1f Kr=%.1f | Master Kt=%.2f Kr=%.2f | "
+          "F=%.2f N M=%.2f Nm | contact=%.2f gM=%.3f "
+          "holdF=%d holdM=%d cmdF=%.2f N cmdM=%.2f Nm | age=%.2f ms\n",
+          backward_active ? 1 : 0,
+          slave_stiffness_level,
+          franka_translational_stiffness_applied,
+          franka_rotational_stiffness_applied,
+          current_master_translational_stiffness_applied,
+          current_master_rotational_stiffness_applied,
+          force_safe ? force_mapped.norm() : 0.0,
+          torque_safe ? torque_mapped.norm() : 0.0,
+          torque_reflection_contact_weight,
+          effective_torque_reflection_gain,
+          force_saturation_hold ? 1 : 0,
+          torque_saturation_hold ? 1 : 0,
+          commanded_wrench.head<3>().norm(),
+          commanded_wrench.tail<3>().norm(),
+          feedback_age_ms);
+    }
+
+    const auto after_work = std::chrono::steady_clock::now();
+    if (after_work > next_tick + std::chrono::milliseconds(5)) {
+      next_tick = after_work;
+    }
+    std::this_thread::sleep_until(next_tick);
+  }
+
+  g_stop_requested = 1;
+  zero_wrench(context);
+  virtEnableForceFeedback(context, 0);
+  virtSetPowerOn(context, 0);
+  close(feedback_socket);
+  close(command_socket);
+  if (diagnostic_socket >= 0) {
+    close(diagnostic_socket);
+  }
+  virtClose(context);
+  return 0;
+}

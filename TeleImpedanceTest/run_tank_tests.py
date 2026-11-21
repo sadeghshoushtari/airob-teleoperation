@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""Closed-loop simulation tests of MasterTeleImpedance + SlaveTeleImpedance with the energy tank.
+
+python3 run_tank_tests.py [<work dir>]
+
+Builds master_ti against the VIRTUOSE stub and slave_ti (tank on, and tank off) against the libfranka stub
+(robot_stub: the end effector as a 3 kg body with identity Jacobian; FRANKA_STUB_HAND = environment spring around
+the start pose with 20 Ns/m), runs the scenarios below with the real UDP links (master <-> slave on 11055/11056,
+stiffness commands on 4500 at 5 Hz as MOSAIC sends them, diagnostics on 11061) and checks:
+
+  free_steps    no contact, master still: commands 300 <-> 700 N/m (20 <-> 40 Nm/rad) reach the slave in real
+                time, with the slave's rate limits; when the commands stop, fallback to 500 N/m, 30 Nm/rad
+                0.5 s after the last packet.
+  contact_tank  master pushes the slave 3 cm into a 3000 N/m environment, operator alternates relaxed / stiff
+                every 2.5 s: each increase at a large error costs tank energy; the tank never drops below its
+                minimum (passive) and holds increases it cannot pay for.
+  contact_off   the same without the tank.
+  small_tank    tank of 0.05 J (maximum 0.1 J), master pushes 4 cm into a 10000 N/m wall: a step 300 -> 700 N/m
+                needs about 0.3 J, so the tank holds it (passive); without the tank (small_off) the integrated tank
+                goes below zero: the energy the stiffness change creates, which the tank prevents.
+  moving        master moves 4 cm / 15 deg at 0.5 Hz while the commands jump between 300 and 700: stable, tank
+                stays above its minimum.
+Energy check in every scenario with a still master: storage (spring + tank) grows by at most the energy that
+entered through the robot.
+"""
+import math
+import os
+import socket
+import struct
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+WORK = Path(sys.argv[1] if len(sys.argv) > 1 else "/tmp/ti_test")
+FIELDS = ("t_s", "live", "cmd_kt", "cmd_kr", "target_kt", "applied_kt", "target_kg", "applied_kg", "tank",
+          "injected", "harvested", "spring", "limited", "active", "port")
+TANK_MIN = 0.01
+failures = []
+
+
+def check(name, ok, detail):
+    print(("PASS  " if ok else "FAIL  ") + name + ": " + detail, flush=True)
+    if not ok:
+        failures.append(name)
+
+
+def build():
+    WORK.mkdir(parents=True, exist_ok=True)
+    common = ["g++", "-std=c++17", "-O2", "-Wall", "-Wextra", f"-I{ROOT / 'Common'}", "-I/usr/include/eigen3",
+              "-pthread"]
+    s = ROOT / "SlaveTeleImpedance"
+    small = ["-DTI_TANK_INITIAL_J=0.05", "-DTI_TANK_MAXIMUM_J=0.1"]
+    for name, flags in (("slave_on", ["-DTI_ENERGY_TANK=1"]), ("slave_off", ["-DTI_ENERGY_TANK=0"]),
+                        ("slave_small_on", ["-DTI_ENERGY_TANK=1"] + small),
+                        ("slave_small_off", ["-DTI_ENERGY_TANK=0"] + small)):
+        subprocess.run(common + flags + [str(s / "slave_ti.cpp"), str(s / "examples_common.cpp"), f"-I{s}",
+                                 f"-I{HERE / 'robot_stub'}", "-o", str(WORK / name)], check=True)
+    m = ROOT / "MasterTeleImpedance"
+    subprocess.run(common + [str(m / "master_ti.cpp"), str(HERE / "virtuose_stub" / "virtuose_stub.cpp"), f"-I{m}",
+                             "-o", str(WORK / "master")], check=True)
+
+
+def quat_z(angle):
+    return (0.0, 0.0, math.sin(angle / 2), math.cos(angle / 2))
+
+
+def run(name, slave, env, pose_of_t, command_of_t, seconds):
+    """Runs one scenario; returns the diagnostic rows (list of dicts)."""
+    pose_file, env_file = WORK / f"{name}_pose.txt", WORK / f"{name}_env.txt"
+    env_file.write_text(" ".join(str(v) for v in env) + "\n" if env else "")
+    pose_file.write_text("0 0 0 0 0 0 1\n")
+    rows, stop = [], threading.Event()
+    t0 = time.monotonic()
+
+    def logger():
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("127.0.0.1", 11061))
+        sock.settimeout(0.2)
+        while not stop.is_set():
+            try:
+                data = sock.recv(1024)
+            except socket.timeout:
+                continue
+            if len(data) == 8 * len(FIELDS):
+                row = dict(zip(FIELDS, struct.unpack(f"<{len(FIELDS)}d", data)))
+                row["t_s"] = time.monotonic() - t0  # runner clock, the time base of the commands and poses
+                rows.append(row)
+        sock.close()
+
+    log_thread = threading.Thread(target=logger)
+    log_thread.start()
+    env_vars = dict(os.environ, FRANKA_STUB_HAND=str(env_file), TI_STUB_POSE=str(pose_file),
+                    TI_STUB_FORCE_LOG=str(WORK / f"{name}_master_force.txt"))
+    (WORK / f"{name}_master_force.txt").unlink(missing_ok=True)
+    slave_p = subprocess.Popen([str(WORK / slave), "0.0.0.0"], stdin=subprocess.PIPE, stdout=open(WORK / f"{name}_slave.txt", "w"),
+                               stderr=subprocess.STDOUT, env=env_vars, text=True)
+    slave_p.stdin.write("\n")
+    slave_p.stdin.flush()
+    master_p = subprocess.Popen([str(WORK / "master")], stdout=open(WORK / f"{name}_master.txt", "w"),
+                                stderr=subprocess.STDOUT, env=env_vars)
+    out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    last_pose = last_cmd = -1.0
+    while (t := time.monotonic() - t0) < seconds:
+        cmd = command_of_t(t)
+        if cmd is not None and t - last_cmd >= 0.2:  # 5 Hz, the MOSAIC output rate
+            last_cmd = t
+            out.sendto(struct.pack("<2d", *cmd), ("127.0.0.1", 4500))
+        if t - last_pose >= 0.02:
+            last_pose = t
+            p, q = pose_of_t(t)
+            tmp = pose_file.with_suffix(".tmp")
+            tmp.write_text(" ".join(f"{v:.6f}" for v in (*p, *q)) + "\n")
+            tmp.replace(pose_file)
+        time.sleep(0.005)  # 200 Hz, as fast as the MOSAIC output or faster
+    master_p.send_signal(2)
+    slave_p.send_signal(2)
+    for p in (master_p, slave_p):
+        try:
+            p.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            p.kill()
+    stop.set()
+    log_thread.join()
+    with open(WORK / f"{name}_log.csv", "w") as f:
+        f.write(",".join(FIELDS) + "\n")
+        for r in rows:
+            f.write(",".join(f"{r[k]:.6g}" for k in FIELDS) + "\n")
+    return rows
+
+
+def window(rows, t0, t1):
+    return [r for r in rows if t0 <= r["t_s"] < t1]
+
+
+def energy_check(name, rows, after):
+    rows = [r for r in rows if r["t_s"] >= after]
+    h0 = rows[0]["spring"] + rows[0]["tank"]
+    p0 = rows[0]["port"]
+    excess = max((r["spring"] + r["tank"] - h0) - (r["port"] - p0) for r in rows)
+    check(f"{name}: storage (spring + tank) grows at most by the energy entering through the robot",
+          excess < 2e-3, f"largest excess {excess * 1000:.2f} mJ (tolerance 2 mJ, discretisation)")
+
+
+def main():
+    build()
+    still = lambda t: ((0.0, 0.0, 0.0), quat_z(0.0))
+
+    # --- free_steps
+    def cmd_free(t):
+        if t < 4: return 300.0, 20.0
+        if t < 10: return 700.0, 40.0
+        if t < 16: return 300.0, 20.0
+        if t < 20: return None  # MOSAIC stopped
+        return 600.0, 35.0
+    rows = run("free_steps", "slave_on", None, still, cmd_free, 24.0)
+    w = window(rows, 9.0, 10.0)
+    check("free_steps: commands reach the slave (700 N/m, 40 Nm/rad = gain 80)",
+          bool(w) and all(r["live"] == 1 for r in w) and abs(w[-1]["applied_kt"] - 700) < 1 and abs(w[-1]["applied_kg"] - 80) < 0.5,
+          f"applied {w[-1]['applied_kt']:.1f} N/m, gain {w[-1]['applied_kg']:.1f}" if w else "no rows")
+    ramp = window(rows, 4.0, 6.5)
+    rates = [(b["applied_kt"] - a["applied_kt"]) / (b["t_s"] - a["t_s"]) for a, b in zip(ramp, ramp[1:]) if b["t_s"] > a["t_s"]]
+    check("free_steps: translational change limited to 200 N/m/s (300 -> 700 in about 2 s)",
+          bool(rates) and max(rates) < 200 * 1.1 and max(rates) > 150,
+          f"largest rate {max(rates):.0f} N/m/s" if rates else "no rows")
+    w = window(rows, 15.0, 16.0)
+    check("free_steps: back to 300 N/m and 20 Nm/rad", bool(w) and abs(w[-1]["applied_kt"] - 300) < 1 and abs(w[-1]["applied_kg"] - 40) < 0.5,
+          f"applied {w[-1]['applied_kt']:.1f} N/m, gain {w[-1]['applied_kg']:.1f}" if w else "no rows")
+    w_live = window(rows, 4.0, 16.0)
+    check("free_steps: input stays live between the 5 Hz packets",
+          bool(w_live) and all(r["live"] == 1 for r in w_live),
+          f"{sum(r['live'] for r in w_live):.0f} of {len(w_live)} samples live")
+    w = window(rows, 16.0, 17.0)
+    stale_at = next((r["t_s"] for r in w if r["live"] == 0), None)
+    check("free_steps: commands stop -> fallback within 0.7 s (timeout 0.5 s after the last packet)",
+          stale_at is not None and stale_at - 16.0 < 0.7,
+          f"fallback flagged at +{(stale_at - 16.0) * 1000:.0f} ms" if stale_at else "never flagged")
+    w = window(rows, 19.0, 20.0)
+    check("free_steps: fallback 500 N/m, 30 Nm/rad (gain 60)", bool(w) and abs(w[-1]["applied_kt"] - 500) < 1 and abs(w[-1]["applied_kg"] - 60) < 0.5,
+          f"applied {w[-1]['applied_kt']:.1f} N/m, gain {w[-1]['applied_kg']:.1f}" if w else "no rows")
+    w = window(rows, 23.0, 24.0)
+    check("free_steps: commands resume -> 600 N/m, 35 Nm/rad", bool(w) and w[-1]["live"] == 1 and abs(w[-1]["applied_kt"] - 600) < 1,
+          f"applied {w[-1]['applied_kt']:.1f} N/m, gain {w[-1]['applied_kg']:.1f}" if w else "no rows")
+    check("free_steps: tank stays above its minimum", min(r["tank"] for r in rows) > TANK_MIN,
+          f"lowest {min(r['tank'] for r in rows):.4f} J")
+    energy_check("free_steps", rows, 3.0)
+
+    # --- contact: master pushes 3 cm into a 3000 N/m environment, operator alternates
+    env = [3000, 0, 0, 0, 3000, 0, 0, 0, 3000, 5, 0, 0, 0, 5, 0, 0, 0, 5]
+    def push(t):
+        a = min(max((t - 2.0) / 1.0, 0.0), 1.0)
+        return (0.03 * a, 0.0, 0.0), quat_z(math.radians(10) * a)
+    def cmd_alt(t):
+        if t < 4: return 300.0, 20.0
+        return (700.0, 40.0) if int((t - 4) / 2.5) % 2 == 0 else (300.0, 20.0)
+    results = {}
+    for name, slave in (("contact_tank", "slave_on"), ("contact_off", "slave_off")):
+        rows = run(name, slave, env, push, cmd_alt, 24.0)
+        results[name] = rows
+        energy_check(name, [r for r in rows if r["t_s"] >= 4.0], 4.0)
+    on, off = results["contact_tank"], results["contact_off"]
+    check("contact_tank: tank never below its minimum (passive)", min(r["tank"] for r in on) >= TANK_MIN - 1e-6,
+          f"lowest {min(r['tank'] for r in on):.4f} J (minimum {TANK_MIN} J), increases held in "
+          f"{100 * sum(r['limited'] for r in on) / len(on):.0f} % of the samples")
+    check("contact: net energy the stiffness changes injected (tank / no tank)", True,
+          f"{on[-1]['injected']:.3f} J / {off[-1]['injected']:.3f} J; lowest integrated tank without it "
+          f"{min(r['tank'] for r in off):.3f} J")
+
+    # --- small tank against a stiff wall
+    wall = [10000, 0, 0, 0, 10000, 0, 0, 0, 10000, 5, 0, 0, 0, 5, 0, 0, 0, 5]
+    def push4(t):
+        a = min(max((t - 2.0) / 1.0, 0.0), 1.0)
+        return (0.04 * a, 0.0, 0.0), quat_z(0.0)
+    def cmd_step(t):
+        return (300.0, 20.0) if t < 5 else (700.0, 40.0)
+    small_on = run("small_tank", "slave_small_on", wall, push4, cmd_step, 12.0)
+    small_off = run("small_off", "slave_small_off", wall, push4, cmd_step, 12.0)
+    for name, rows in (("small_tank", small_on), ("small_off", small_off)):
+        energy_check(name, [r for r in rows if r["t_s"] >= 4.0], 4.0)
+    w = window(small_on, 10.0, 12.0)
+    check("small_tank: the tank holds the increase it cannot pay for, stays at its minimum (passive)",
+          min(r["tank"] for r in small_on) >= TANK_MIN - 1e-6 and w and w[-1]["applied_kt"] < 650 and any(r["limited"] for r in small_on),
+          f"lowest tank {min(r['tank'] for r in small_on):.4f} J, stiffness held at {w[-1]['applied_kt']:.0f} N/m (target 700)" if w else "no rows")
+    w = window(small_off, 10.0, 12.0)
+    check("small_off: without the tank the step goes through and creates energy (integrated tank below zero)",
+          min(r["tank"] for r in small_off) < 0.0 and w and w[-1]["applied_kt"] > 695,
+          f"lowest integrated tank {min(r['tank'] for r in small_off):.3f} J, stiffness {w[-1]['applied_kt']:.0f} N/m" if w else "no rows")
+    check("contact_tank: the tank lets the stiffness rise while it has energy",
+          max(r["applied_kt"] for r in window(on, 4.0, 7.0)) > 650,
+          f"first stiff phase reaches {max(r['applied_kt'] for r in window(on, 4.0, 7.0)):.0f} N/m")
+
+    # --- moving master
+    def wave(t):
+        a = min(max((t - 2.0) / 2.0, 0.0), 1.0)
+        s = math.sin(2 * math.pi * 0.5 * t)
+        return (0.04 * a * s, 0.0, 0.0), quat_z(math.radians(15) * a * s)
+    def cmd_jump(t):
+        return (700.0, 40.0) if int(t / 1.5) % 2 else (300.0, 20.0)
+    rows = run("moving", "slave_on", None, wave, cmd_jump, 20.0)
+    check("moving: tank stays above its minimum, stiffness follows the commands",
+          min(r["tank"] for r in rows) >= TANK_MIN - 1e-6 and max(r["applied_kt"] for r in rows) > 600 and min(r["applied_kt"] for r in window(rows, 5, 20)) < 400,
+          f"tank {min(r['tank'] for r in rows):.3f}-{max(r['tank'] for r in rows):.3f} J, applied "
+          f"{min(r['applied_kt'] for r in window(rows, 5, 20)):.0f}-{max(r['applied_kt'] for r in rows):.0f} N/m")
+    force = [list(map(float, l.split())) for l in (WORK / "moving_master_force.txt").read_text().splitlines() if l.strip()]
+    fmax = max(math.sqrt(f[1] ** 2 + f[2] ** 2 + f[3] ** 2) for f in force) if force else float("nan")
+    check("moving: master renders bounded forces (no instability)", force and fmax < 20.0, f"largest master force {fmax:.2f} N")
+    print("ALL CHECKS PASSED" if not failures else f"{len(failures)} CHECK(S) FAILED")
+    sys.exit(1 if failures else 0)
+
+
+if __name__ == "__main__":
+    main()
