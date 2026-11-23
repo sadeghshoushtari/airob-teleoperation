@@ -75,6 +75,11 @@ g++ -std=c++17 -O2 -Wall -Wextra master_ti.cpp -I. -I../Common -I/usr/include/ei
 
 Without MOSAIC the slave runs at the fallback stiffness (500 N/m, 30 Nm/rad) and prints `input FALLBACK`.
 
+Hardware test of the stiffness input and the tank without the sensors (the trigger no longer sets the stiffness):
+`python3 TeleImpedanceTest/stiffness_sender.py` sends a level typed by hand (0 = 300 N/m, 20 Nm/rad; 1 = 700 N/m,
+40 Nm/rad) at 5 Hz to port 4500, as MOSAIC does; `--steps 4` alternates 0 and 1 every 4 s. When it stops, the slave
+returns to the fallback 0.5 s later.
+
 ## Tests (no robot)
 
 `python3 TeleImpedanceTest/run_tank_tests.py [work dir]` builds master_ti against a VIRTUOSE stub and slave_ti
