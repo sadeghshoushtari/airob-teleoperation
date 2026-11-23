@@ -58,6 +58,10 @@ constexpr double kTankInitialEnergyJ = TI_TANK_INITIAL_J;
 constexpr double kTankMinimumEnergyJ = 0.01;
 constexpr double kTankMaximumEnergyJ = TI_TANK_MAXIMUM_J;
 
+// Largest translational spring force (N), below the 35 N collision threshold. Beyond the offset
+// kMaxSpringForceN / Kt the spring force stays at this value (saturated spring, still passive).
+constexpr double kMaxSpringForceN = 30.0;
+
 // Diagnostics: 100 Hz UDP packet for SlaveTeleImpedance/tank_logger.py (logging only, never read by control).
 constexpr int kTeleImpedanceDiagnosticPort = 11061;
 constexpr int kTeleImpedanceDiagnosticEveryCycles = 10;

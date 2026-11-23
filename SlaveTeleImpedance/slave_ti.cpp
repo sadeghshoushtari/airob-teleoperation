@@ -638,10 +638,19 @@ int main(int argc, char** argv) {
           tank.update(
               k_target,
               k_rot_target,
-              position_error.squaredNorm(),
+              std::min(position_error.squaredNorm(),
+                       std::pow(kMaxSpringForceN / k_applied, 2)),
               rotation_potential,
               &k_applied,
               &k_rot_applied);
+
+          // Spring offset limited so that k_applied * spring_error never exceeds kMaxSpringForceN.
+          const double error_limit = kMaxSpringForceN / k_applied;
+          const double error_norm = position_error.norm();
+          const Eigen::Vector3d spring_error =
+              error_norm > error_limit
+                  ? Eigen::Vector3d(position_error * (error_limit / error_norm))
+                  : position_error;
 
           const double d_applied =
               kBaselineTranslationalDamping *
@@ -660,7 +669,9 @@ int main(int argc, char** argv) {
           if (diagnostic_socket >= 0 &&
               diagnostic_counter % kTeleImpedanceDiagnosticEveryCycles == 0) {
             const double spring_energy =
-                0.5 * k_applied * position_error.squaredNorm() +
+                (error_norm > error_limit
+                     ? kMaxSpringForceN * error_norm - 0.5 * kMaxSpringForceN * error_limit
+                     : 0.5 * k_applied * position_error.squaredNorm()) +
                 k_rot_applied * rotation_potential;
             const double diagnostic[15] = {
                 local_time_s,
@@ -692,7 +703,7 @@ int main(int argc, char** argv) {
 
           Vector6d cartesian_wrench;
           cartesian_wrench.head<3>() =
-              -k_applied * position_error -
+              -k_applied * spring_error -
               d_applied * cartesian_velocity.head<3>();
           cartesian_wrench.tail<3>() =
               -k_rot_applied * orientation_error -

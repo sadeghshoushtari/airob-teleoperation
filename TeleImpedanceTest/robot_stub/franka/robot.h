@@ -3,8 +3,9 @@
 // program's torques 1-3 (the stub Jacobian makes them the Cartesian force) and by a hand spring K_h with 20 Ns/m; its
 // orientation (inertia 0.02 kg m^2, small-angle rotation vector) held by torques 4-6 and a rotational hand spring K_hr
 // with 0.3 Nms/rad. K_h (9 numbers, N/m, row by row), optionally followed by K_hr (9 numbers, Nm/rad), is read every
-// 50 ms from the file named by FRANKA_STUB_HAND (none: no hand). O_F_ext_hat_K = (K_h dx, K_hr dtheta). Runs at 1 kHz wall-clock time until the program ends the
-// control loop.
+// 50 ms from the file named by FRANKA_STUB_HAND (none: no hand). O_F_ext_hat_K = (K_h dx, K_hr dtheta); its force is
+// appended at 100 Hz ("t fx fy fz") to the file named by FRANKA_STUB_FORCE_LOG (if set). Runs at 1 kHz wall-clock
+// time until the program ends the control loop.
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -57,6 +58,11 @@ struct Robot {
         st.dq[r] = v[r];
         const int o = r < 3 ? 0 : 3, kb = r < 3 ? 3 * r : 9 + 3 * (r - 3);
         st.O_F_ext_hat_K[r] = k[kb] * x[o] + k[kb + 1] * x[o + 1] + k[kb + 2] * x[o + 2];
+      }
+      static const char* force_log = std::getenv("FRANKA_STUB_FORCE_LOG");
+      if (force_log && i % 10 == 0) {
+        std::ofstream lf(force_log, std::ios::app);
+        lf << i * dt << ' ' << st.O_F_ext_hat_K[0] << ' ' << st.O_F_ext_hat_K[1] << ' ' << st.O_F_ext_hat_K[2] << '\n';
       }
       const Torques out = cb(st, Duration{});
       st.tau_J_d = out.tau_J;

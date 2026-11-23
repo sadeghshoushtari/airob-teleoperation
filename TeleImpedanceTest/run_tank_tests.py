@@ -18,6 +18,9 @@ stiffness commands on 4500 at 5 Hz as MOSAIC sends them, diagnostics on 11061) a
   small_tank    tank of 0.05 J (maximum 0.1 J), master pushes 4 cm into a 10000 N/m wall: a step 300 -> 700 N/m
                 needs about 0.3 J, so the tank holds it (passive); without the tank (small_off) the integrated tank
                 goes below zero: the energy the stiffness change creates, which the tank prevents.
+  deep          master pushes 7 cm into the 10000 N/m wall, step 300 -> 700 N/m: the spring force rises to the
+                limit (kMaxSpringForceN, 30 N, below the 35 N collision threshold) and stays there for the whole
+                contact.
   moving        master moves 4 cm / 15 deg at 0.5 Hz while the commands jump between 300 and 700: stable, tank
                 stays above its minimum.
 Energy check in every scenario with a still master: storage (spring + tank) grows by at most the energy that
@@ -94,8 +97,10 @@ def run(name, slave, env, pose_of_t, command_of_t, seconds):
     log_thread = threading.Thread(target=logger)
     log_thread.start()
     env_vars = dict(os.environ, FRANKA_STUB_HAND=str(env_file), TI_STUB_POSE=str(pose_file),
-                    TI_STUB_FORCE_LOG=str(WORK / f"{name}_master_force.txt"))
+                    TI_STUB_FORCE_LOG=str(WORK / f"{name}_master_force.txt"),
+                    FRANKA_STUB_FORCE_LOG=str(WORK / f"{name}_slave_force.txt"))
     (WORK / f"{name}_master_force.txt").unlink(missing_ok=True)
+    (WORK / f"{name}_slave_force.txt").unlink(missing_ok=True)
     slave_p = subprocess.Popen([str(WORK / slave), "0.0.0.0"], stdin=subprocess.PIPE, stdout=open(WORK / f"{name}_slave.txt", "w"),
                                stderr=subprocess.STDOUT, env=env_vars, text=True)
     slave_p.stdin.write("\n")
@@ -231,6 +236,20 @@ def main():
     check("contact_tank: the tank lets the stiffness rise while it has energy",
           max(r["applied_kt"] for r in window(on, 4.0, 7.0)) > 650,
           f"first stiff phase reaches {max(r['applied_kt'] for r in window(on, 4.0, 7.0)):.0f} N/m")
+
+    # --- deep contact: the spring force stays at its limit
+    def push7(t):
+        a = min(max(t - 2.0, 0.0), 1.0) * (1.0 - min(max(t - 14.0, 0.0), 1.0))
+        return (0.07 * a, 0.0, 0.0), quat_z(0.0)
+    rows = run("deep", "slave_on", wall, push7, cmd_step, 16.0)
+    energy_check("deep", [r for r in rows if r["t_s"] >= 4.0], 4.0)
+    force = [list(map(float, l.split())) for l in (WORK / "deep_slave_force.txt").read_text().splitlines() if l.strip()]
+    force = [(f[0], math.sqrt(f[1] ** 2 + f[2] ** 2 + f[3] ** 2)) for f in force]
+    held = [f for t, f in force if 7.0 <= t < 13.5]
+    peak = max(f for _, f in force) if force else float("nan")
+    check("deep: 7 cm into the wall at 300 -> 700 N/m, the slave force rises to 30 N and stays there in contact",
+          bool(held) and peak < 30.5 and min(held) > 29.5,
+          f"largest {peak:.1f} N, 7-13.5 s {min(held):.1f}-{max(held):.1f} N" if held else "no force log")
 
     # --- moving master
     def wave(t):
