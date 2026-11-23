@@ -25,6 +25,21 @@ stiffness commands on 4500 at 5 Hz as MOSAIC sends them, diagnostics on 11061) a
                 stays above its minimum.
 Energy check in every scenario with a still master: storage (spring + tank) grows by at most the energy that
 entered through the robot.
+
+The passivity layer at the master (feedback tank and buzz-band damping) is tested with a simulated operator's hand
+(VIRTUOSE stub, TI_STUB_HAND: a light grip of 0.5 kg, 8 Ns/m, 200 N/m around the intended pose; the hand presses 3 cm
+towards a wall of 10000 N/m and 30 Nm/rad, holds, releases), slave at 700 N/m:
+  hand_press    no delay, master with and without the layers: the same steady hold force, not dropped, the layers
+                stay idle.
+  delay_loop    the slave's external-wrench estimate reported 12 ms late (FRANKA_STUB_FORCE_DELAY_MS): without the
+                layers the loop oscillates and the feedback gives the hand far more energy than it receives; with
+                them the oscillation stays below a tenth.
+  full_tank     the same with the tank full (1 J, as after much pressing): the tank does not act, the buzz-band
+                damping stops the oscillation.
+  gain_08       force reflection 0.8, torque reflection up to 0.75, no delay: without the layers the loop
+                oscillates; with them it does not grow.
+Master-port check in every scenario with the layers: the feedback gives the hand at most the energy it received
+plus the initial tank.
 """
 import math
 import os
@@ -41,8 +56,11 @@ ROOT = HERE.parent
 WORK = Path(sys.argv[1] if len(sys.argv) > 1 else "/tmp/ti_test")
 FIELDS = ("t_s", "live", "cmd_kt", "cmd_kr", "target_kt", "applied_kt", "target_kg", "applied_kg", "tank",
           "injected", "harvested", "spring", "limited", "active", "port")
+MASTER_FIELDS = ("t_s", "active", "tank", "delivered", "received", "dissipated", "removed", "limited", "power",
+                 "force_cut", "torque_cut", "damping_t", "damping_r", "buzz_pf", "buzz_pm", "buzz_dt", "buzz_dr")
 TANK_MIN = 0.01
 failures = []
+master_rows = {}
 
 
 def check(name, ok, detail):
@@ -63,49 +81,58 @@ def build():
         subprocess.run(common + flags + [str(s / "slave_ti.cpp"), str(s / "examples_common.cpp"), f"-I{s}",
                                  f"-I{HERE / 'robot_stub'}", "-o", str(WORK / name)], check=True)
     m = ROOT / "MasterTeleImpedance"
-    subprocess.run(common + [str(m / "master_ti.cpp"), str(HERE / "virtuose_stub" / "virtuose_stub.cpp"), f"-I{m}",
-                             "-o", str(WORK / "master")], check=True)
+    off = ["-DTI_MASTER_TANK=0", "-DTI_BUZZ_DAMPER=0"]
+    g08 = ["-DTI_FORCE_REFLECTION_GAIN=0.8", "-DTI_TORQUE_REFLECTION_GAIN_MAX=0.75"]
+    for name, flags in (("master", []), ("master_layers_off", off), ("master_full_tank", ["-DTI_MASTER_TANK_INITIAL_J=1.0"]),
+                        ("master_g08", g08), ("master_g08_off", g08 + off)):
+        subprocess.run(common + flags + [str(m / "master_ti.cpp"), str(HERE / "virtuose_stub" / "virtuose_stub.cpp"),
+                                         f"-I{m}", "-o", str(WORK / name)], check=True)
 
 
 def quat_z(angle):
     return (0.0, 0.0, math.sin(angle / 2), math.cos(angle / 2))
 
 
-def run(name, slave, env, pose_of_t, command_of_t, seconds):
-    """Runs one scenario; returns the diagnostic rows (list of dicts)."""
+def run(name, slave, env, pose_of_t, command_of_t, seconds, master="master", extra_env=None):
+    """Runs one scenario; returns the slave's diagnostic rows (list of dicts). The master tank's rows go to
+    master_rows[name]."""
     pose_file, env_file = WORK / f"{name}_pose.txt", WORK / f"{name}_env.txt"
     env_file.write_text(" ".join(str(v) for v in env) + "\n" if env else "")
     pose_file.write_text("0 0 0 0 0 0 1\n")
-    rows, stop = [], threading.Event()
+    rows, mrows, stop = [], [], threading.Event()
     t0 = time.monotonic()
 
-    def logger():
+    def logger(port, fields, out):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind(("127.0.0.1", 11061))
+        sock.bind(("127.0.0.1", port))
         sock.settimeout(0.2)
         while not stop.is_set():
             try:
                 data = sock.recv(1024)
             except socket.timeout:
                 continue
-            if len(data) == 8 * len(FIELDS):
-                row = dict(zip(FIELDS, struct.unpack(f"<{len(FIELDS)}d", data)))
+            if len(data) == 8 * len(fields):
+                row = dict(zip(fields, struct.unpack(f"<{len(fields)}d", data)))
                 row["t_s"] = time.monotonic() - t0  # runner clock, the time base of the commands and poses
-                rows.append(row)
+                out.append(row)
         sock.close()
 
-    log_thread = threading.Thread(target=logger)
-    log_thread.start()
+    log_threads = [threading.Thread(target=logger, args=(11061, FIELDS, rows)),
+                   threading.Thread(target=logger, args=(11062, MASTER_FIELDS, mrows))]
+    for thread in log_threads:
+        thread.start()
     env_vars = dict(os.environ, FRANKA_STUB_HAND=str(env_file), TI_STUB_POSE=str(pose_file),
                     TI_STUB_FORCE_LOG=str(WORK / f"{name}_master_force.txt"),
-                    FRANKA_STUB_FORCE_LOG=str(WORK / f"{name}_slave_force.txt"))
+                    FRANKA_STUB_FORCE_LOG=str(WORK / f"{name}_slave_force.txt"),
+                    FRANKA_STUB_MOMENT_COUPLING="0.405 0.071 0.205")  # as the real estimate (master compensates it)
     (WORK / f"{name}_master_force.txt").unlink(missing_ok=True)
     (WORK / f"{name}_slave_force.txt").unlink(missing_ok=True)
+    env_vars.update(extra_env or {})
     slave_p = subprocess.Popen([str(WORK / slave), "0.0.0.0"], stdin=subprocess.PIPE, stdout=open(WORK / f"{name}_slave.txt", "w"),
                                stderr=subprocess.STDOUT, env=env_vars, text=True)
     slave_p.stdin.write("\n")
     slave_p.stdin.flush()
-    master_p = subprocess.Popen([str(WORK / "master")], stdout=open(WORK / f"{name}_master.txt", "w"),
+    master_p = subprocess.Popen([str(WORK / master)], stdout=open(WORK / f"{name}_master.txt", "w"),
                                 stderr=subprocess.STDOUT, env=env_vars)
     out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     last_pose = last_cmd = -1.0
@@ -129,12 +156,55 @@ def run(name, slave, env, pose_of_t, command_of_t, seconds):
         except subprocess.TimeoutExpired:
             p.kill()
     stop.set()
-    log_thread.join()
-    with open(WORK / f"{name}_log.csv", "w") as f:
-        f.write(",".join(FIELDS) + "\n")
-        for r in rows:
-            f.write(",".join(f"{r[k]:.6g}" for k in FIELDS) + "\n")
+    for thread in log_threads:
+        thread.join()
+    for path, fields, out in ((WORK / f"{name}_log.csv", FIELDS, rows), (WORK / f"{name}_master_tank.csv", MASTER_FIELDS, mrows)):
+        with open(path, "w") as f:
+            f.write(",".join(fields) + "\n")
+            for r in out:
+                f.write(",".join(f"{r[k]:.6g}" for k in fields) + "\n")
+    master_rows[name] = mrows
     return rows
+
+
+MASTER_TANK_INITIAL = 0.05
+LIGHT_GRIP = "0.5 8 200 0.005 0.1 2"  # kg, Ns/m, N/m, kg m^2, Nms/rad, Nm/rad
+
+
+def force_norms(path, t0, t1):
+    """|F| (N) of a force log ("t fx fy fz ...") between t0 and t1."""
+    out = []
+    for line in path.read_text().splitlines():
+        v = list(map(float, line.split()))
+        if len(v) >= 4 and t0 <= v[0] < t1:
+            out.append(math.sqrt(v[1] ** 2 + v[2] ** 2 + v[3] ** 2))
+    return out
+
+
+def hand_run(name, master, delay_ms):
+    """Hand presses 3 cm towards the wall at 4-5 s, holds to 11 s, releases at 11-12 s. Returns (VIRTUOSE |F| and
+    slave |F| over the hold 7-11 s, master tank rows while active)."""
+    wall = [10000, 0, 0, 0, 10000, 0, 0, 0, 10000, 30, 0, 0, 0, 30, 0, 0, 0, 30]
+    def press(t):
+        a = min(max(t - 4.0, 0.0), 1.0) * (1.0 - min(max(t - 11.0, 0.0), 1.0))
+        return (0.03 * a, 0.0, 0.0), quat_z(0.0)
+    run(name, "slave_on", wall, press, lambda t: (700.0, 40.0), 14.0, master=master,
+        extra_env={"TI_STUB_HAND": LIGHT_GRIP, "FRANKA_STUB_FORCE_DELAY_MS": str(delay_ms)})
+    return (force_norms(WORK / f"{name}_master_force.txt", 7.0, 11.0),
+            force_norms(WORK / f"{name}_slave_force.txt", 7.0, 11.0),
+            [r for r in master_rows[name] if r["active"] > 0])
+
+
+def swing(values):
+    return max(values) - min(values) if values else float("nan")
+
+
+def master_port_check(name, mrows, initial=MASTER_TANK_INITIAL):
+    last = mrows[-1]
+    excess = last["delivered"] - last["received"] - initial
+    check(f"{name}: the feedback gives the hand at most what it received plus the initial tank (master port passive)",
+          excess < 5e-3, f"gave {last['delivered']:.3f} J, received {last['received']:.3f} J, initial {initial:.2f} J, "
+          f"lowest tank {min(r['tank'] for r in mrows):+.4f} J")
 
 
 def window(rows, t0, t1):
@@ -266,6 +336,46 @@ def main():
     force = [list(map(float, l.split())) for l in (WORK / "moving_master_force.txt").read_text().splitlines() if l.strip()]
     fmax = max(math.sqrt(f[1] ** 2 + f[2] ** 2 + f[3] ** 2) for f in force) if force else float("nan")
     check("moving: master renders bounded forces (no instability)", force and fmax < 20.0, f"largest master force {fmax:.2f} N")
+    master_port_check("moving", [r for r in master_rows["moving"] if r["active"] > 0])
+
+    # --- passivity layer at the master, with a simulated hand
+    f_on, s_on, m_on = hand_run("hand_press", "master", 0)
+    f_off, s_off, m_off = hand_run("hand_press_off", "master_layers_off", 0)
+    check("hand_press: no delay, the layers do not change a stable contact (same steady hold force, not dropped)",
+          swing(f_on) < 0.1 and swing(f_off) < 0.1 and abs(sum(f_on) / len(f_on) - sum(f_off) / len(f_off)) < 0.05,
+          f"VIRTUOSE hold force {sum(f_on) / len(f_on):.2f} N (swing {swing(f_on):.2f}) with, "
+          f"{sum(f_off) / len(f_off):.2f} N (swing {swing(f_off):.2f}) without the layers")
+    check("hand_press: the layers stay idle in a stable contact",
+          max(r["buzz_dt"] for r in m_on) < 0.5 and max(r["damping_t"] for r in m_on) < 0.5 and not any(r["limited"] for r in m_on),
+          f"buzz damping max {max(r['buzz_dt'] for r in m_on):.2f} Ns/m, tank damping max {max(r['damping_t'] for r in m_on):.2f} Ns/m")
+    master_port_check("hand_press", m_on)
+
+    f_off, s_off, m_off = hand_run("delay_loop_off", "master_layers_off", 12)
+    f_on, s_on, m_on = hand_run("delay_loop", "master", 12)
+    check("delay_loop_off: estimate 12 ms late, without the layers the loop oscillates and the feedback creates energy",
+          swing(s_off) > 10.0 and m_off[-1]["delivered"] > m_off[-1]["received"] + 1.0,
+          f"slave force swing {swing(s_off):.1f} N, feedback gave {m_off[-1]['delivered']:.2f} J, received {m_off[-1]['received']:.2f} J")
+    check("delay_loop: with the layers the oscillation stays below a tenth of that",
+          swing(f_on) < 1.0 and swing(s_on) < 0.1 * swing(s_off),
+          f"VIRTUOSE force swing {swing(f_on):.2f} N, slave force swing {swing(s_on):.2f} N (without: {swing(s_off):.1f} N)")
+    master_port_check("delay_loop", m_on)
+
+    f_full, s_full, m_full = hand_run("full_tank", "master_full_tank", 12)
+    check("full_tank: tank full (1 J), it does not act; the buzz-band damping stops the oscillation",
+          swing(s_full) < 0.1 * swing(s_off) and min(r["tank"] for r in m_full) > 0.9 and max(r["buzz_dt"] for r in m_full) > 1.0,
+          f"slave force swing {swing(s_full):.2f} N, lowest tank {min(r['tank'] for r in m_full):.3f} J, "
+          f"buzz damping max {max(r['buzz_dt'] for r in m_full):.1f} Ns/m")
+    master_port_check("full_tank", m_full, initial=1.0)
+
+    f_off, s_off, m_off = hand_run("gain_08_off", "master_g08_off", 0)
+    f_on, s_on, m_on = hand_run("gain_08", "master_g08", 0)
+    check("gain_08_off: reflection 0.8 / 0.75 without the layers, the loop oscillates (light grip)",
+          swing(s_off) > 10.0, f"slave force swing {swing(s_off):.1f} N, feedback gave {m_off[-1]['delivered']:.2f} J, "
+          f"received {m_off[-1]['received']:.2f} J")
+    check("gain_08: with the layers it does not grow (a residual vibration remains)",
+          swing(s_on) < 0.2 * swing(s_off), f"VIRTUOSE force swing {swing(f_on):.2f} N, slave force swing {swing(s_on):.2f} N, "
+          f"hold force {sum(f_on) / len(f_on):.2f} N, buzz damping max {max(r['buzz_dt'] for r in m_on):.1f} Ns/m")
+    master_port_check("gain_08", m_on)
     print("ALL CHECKS PASSED" if not failures else f"{len(failures)} CHECK(S) FAILED")
     sys.exit(1 if failures else 0)
 

@@ -26,6 +26,8 @@
 #include "teleop_common.hpp"
 #include "teleop_math.hpp"
 #include "master_config.hpp"
+#include "feedback_tank.hpp"
+#include "buzz_damper.hpp"
 #include "teleop_runtime.hpp"
 #include "master_runtime.hpp"
 
@@ -212,6 +214,10 @@ int main() {
     }
   }
 
+  // Diagnostics of the feedback tank (logging only): same socket, own port.
+  sockaddr_in tank_diagnostic_address = diagnostic_address;
+  tank_diagnostic_address.sin_port = htons(kFeedbackTankDiagnosticPort);
+
   const auto start_time = std::chrono::steady_clock::now();
   auto next_tick = std::chrono::steady_clock::now();
   auto previous_loop_time = next_tick;
@@ -251,6 +257,36 @@ int main() {
       Eigen::Quaterniond::Identity();
 
   int terminal_counter = 0;
+
+  FeedbackTank feedback_tank(
+      kFeedbackTankInitialJ,
+      kFeedbackTankMinimumJ,
+      kFeedbackTankMaximumJ,
+      kFeedbackTankDampingBandJ,
+      kFeedbackTankMaximumLinearDamping,
+      kFeedbackTankMaximumAngularDamping,
+      kFeedbackTankMotionSmoothing,
+      kEnableFeedbackTank);
+  BuzzDamper buzz_damper(
+      kBuzzBandLowHz,
+      kBuzzBandHighHz,
+      kBuzzPowerTimeConstantS,
+      kBuzzReleaseTimeS,
+      kBuzzMargin,
+      kBuzzForcePowerThresholdW,
+      kBuzzTorquePowerThresholdW,
+      kBuzzMaximumLinearDamping,
+      kBuzzMaximumAngularDamping,
+      kBuzzLinearVelocityFloor,
+      kBuzzAngularVelocityFloor,
+      kEnableBuzzDamper);
+  Vector6d buzz_sent_wrench = Vector6d::Zero();
+  Vector6d tank_sent_wrench = Vector6d::Zero();
+  Vector6d tank_sent_damping = Vector6d::Zero();
+  Eigen::Vector3d tank_previous_position = Eigen::Vector3d::Zero();
+  Eigen::Quaterniond tank_previous_orientation = Eigen::Quaterniond::Identity();
+  bool tank_previous_pose_valid = false;
+  int tank_limited_cycles = 0;
 
   while (!g_stop_requested) {
     next_tick += loop_period;
@@ -548,6 +584,7 @@ int main() {
     previous_backward_active = backward_active;
 
     Vector6d sync_wrench = Vector6d::Zero();
+    bool rotation_sync_applied = false;
     if (backward_active && backward_reference_ready) {
       if (kEnableBackwardPositionCoupling) {
         const Eigen::Vector3d franka_delta =
@@ -580,6 +617,7 @@ int main() {
             kMaxBackwardRotationErrorRad);
 
         if (rotation_error.norm() > kMinBackwardRotationErrorRad) {
+          rotation_sync_applied = true;
           sync_wrench.tail<3>() =
               current_master_rotational_stiffness_applied * rotation_error +
               current_master_rotational_damping_applied *
@@ -752,6 +790,86 @@ int main() {
       }
     }
 
+    // ------------------------------------------------------------
+    // FEEDBACK ENERGY TANK (passivity layer, feedback_tank.hpp)
+    //
+    // Books the energy the last command exchanged with the hand, then
+    // reduces the new command along the motion if the tank cannot pay for
+    // its work. The baseline state (rendered_wrench, holds) is not changed.
+    // ------------------------------------------------------------
+    Vector6d tank_displacement = Vector6d::Zero();
+    const bool virtuose_pose_valid =
+        finite_vector3(virtuose_position) &&
+        finite_quaternion(virtuose_orientation);
+    if (virtuose_pose_valid && tank_previous_pose_valid) {
+      tank_displacement.head<3>() =
+          virtuose_position - tank_previous_position;
+      Eigen::Quaterniond step =
+          virtuose_orientation * tank_previous_orientation.inverse();
+      if (step.w() < 0.0) {
+        step.coeffs() = -step.coeffs();
+      }
+      const Eigen::AngleAxisd step_rotation(step.normalized());
+      tank_displacement.tail<3>() =
+          step_rotation.angle() * step_rotation.axis();
+    }
+    const double tank_booked_power =
+        (tank_sent_wrench - tank_sent_damping).dot(tank_displacement) /
+        master_impedance_dt_s;
+    feedback_tank.account(
+        tank_sent_wrench, tank_sent_damping, tank_displacement);
+    tank_previous_position = virtuose_position;
+    tank_previous_orientation = virtuose_orientation;
+    tank_previous_pose_valid = virtuose_pose_valid;
+
+    // Pure damping in the command (-D times the VIRTUOSE's own velocity):
+    // passive by itself, neither paid nor stored.
+    Vector6d command_damping = Vector6d::Zero();
+    if (backward_active && backward_reference_ready) {
+      if (kEnableBackwardPositionCoupling) {
+        command_damping.head<3>() -=
+            current_master_translational_damping_applied *
+            virtuose_linear_velocity;
+      }
+      if (rotation_sync_applied) {
+        command_damping.tail<3>() -=
+            current_master_rotational_damping_applied *
+            virtuose_angular_velocity;
+      }
+      command_damping += directional_wrench;
+    }
+    if (force_saturation_hold) {
+      command_damping.head<3>().setZero();
+    }
+    if (torque_saturation_hold) {
+      command_damping.tail<3>().setZero();
+    }
+
+    // Buzz-band damping (buzz_damper.hpp), from the last command without
+    // its own part; added before the tank, which books it with the rest.
+    Vector6d virtuose_velocity;
+    virtuose_velocity << virtuose_linear_velocity, virtuose_angular_velocity;
+    const Vector6d buzz_wrench = buzz_damper.update(
+        tank_sent_wrench - buzz_sent_wrench,
+        virtuose_velocity,
+        master_impedance_dt_s);
+
+    Vector6d tank_cut = Vector6d::Zero();
+    if (backward_active && backward_reference_ready) {
+      commanded_wrench += buzz_wrench;
+      const Vector6d baseline_command = commanded_wrench;
+      commanded_wrench = feedback_tank.limit(
+          commanded_wrench,
+          command_damping,
+          virtuose_velocity,
+          tank_displacement,
+          master_impedance_dt_s);
+      tank_cut = baseline_command - commanded_wrench;
+      if (feedback_tank.limited) {
+        ++tank_limited_cycles;
+      }
+    }
+
     bool virtuose_command_applied = false;
 
     if (backward_active && backward_reference_ready) {
@@ -766,7 +884,15 @@ int main() {
       } else {
         virtuose_command_applied = true;
       }
+      tank_sent_wrench = commanded_wrench;
+      tank_sent_damping =
+          virtuose_command_applied ? command_damping : Vector6d::Zero();
+      buzz_sent_wrench =
+          virtuose_command_applied ? buzz_wrench : Vector6d::Zero();
     } else {
+      tank_sent_wrench.setZero();
+      tank_sent_damping.setZero();
+      buzz_sent_wrench.setZero();
       zero_wrench(context);
       filtered_wrench.setZero();
       rendered_wrench.setZero();
@@ -867,6 +993,37 @@ int main() {
       ++diagnostic_packet_id;
     }
 
+    if (diagnostic_socket >= 0 &&
+        packet_id %
+                static_cast<uint64_t>(kFeedbackTankDiagnosticEveryCycles) ==
+            0U) {
+      const double tank_diagnostic[17] = {
+          elapsed_us(start_time) * 1e-6,
+          backward_active && backward_reference_ready ? 1.0 : 0.0,
+          feedback_tank.energy,
+          feedback_tank.delivered,
+          feedback_tank.received,
+          feedback_tank.dissipated,
+          feedback_tank.removed,
+          feedback_tank.limited ? 1.0 : 0.0,
+          tank_booked_power,
+          tank_cut.head<3>().norm(),
+          tank_cut.tail<3>().norm(),
+          feedback_tank.linear_damping,
+          feedback_tank.angular_damping,
+          buzz_damper.force_band_power(),
+          buzz_damper.torque_band_power(),
+          buzz_damper.linear_damping(),
+          buzz_damper.angular_damping()};
+      (void)sendto(
+          diagnostic_socket,
+          tank_diagnostic,
+          sizeof(tank_diagnostic),
+          MSG_DONTWAIT,
+          reinterpret_cast<sockaddr*>(&tank_diagnostic_address),
+          sizeof(tank_diagnostic_address));
+    }
+
     const double command_packet[kCommandPacketSize] = {
         static_cast<double>(packet_id),
         elapsed_us(start_time),
@@ -899,7 +1056,8 @@ int main() {
           "[MASTER-TI] active=%d level=%.2f "
           "Slave Kt=%.1f Kr=%.1f | Master Kt=%.2f Kr=%.2f | "
           "F=%.2f N M=%.2f Nm | contact=%.2f gM=%.3f "
-          "holdF=%d holdM=%d cmdF=%.2f N cmdM=%.2f Nm | age=%.2f ms\n",
+          "holdF=%d holdM=%d cmdF=%.2f N cmdM=%.2f Nm | age=%.2f ms | "
+          "tank=%.3f J limited %d ms buzz=%.1f Ns/m\n",
           backward_active ? 1 : 0,
           slave_stiffness_level,
           franka_translational_stiffness_applied,
@@ -914,7 +1072,11 @@ int main() {
           torque_saturation_hold ? 1 : 0,
           commanded_wrench.head<3>().norm(),
           commanded_wrench.tail<3>().norm(),
-          feedback_age_ms);
+          feedback_age_ms,
+          feedback_tank.energy,
+          tank_limited_cycles,
+          buzz_damper.linear_damping());
+      tank_limited_cycles = 0;
     }
 
     const auto after_work = std::chrono::steady_clock::now();
