@@ -10,7 +10,7 @@ integration. The logger combines:
 2. Passive AF_PACKET copies of the existing Franka feedback UDP stream.
 3. A dedicated logging-only Master diagnostic UDP stream (default 100 Hz).
 
-The diagnostic stream is transmitted by Master/masterv.cpp only for logging.
+The diagnostic stream is transmitted by MasterTeleImpedance/master_ti.cpp only for logging.
 It is never received by the Slave and never feeds back into control.
 
 Typical use
@@ -250,10 +250,10 @@ DIAGNOSTIC_FIELDS = [
 
 CONFIG_PATHS = [
     "Common/teleop_common.hpp",
-    "Master/master_config.hpp",
-    "Slave/slave_config.hpp",
-    "Master/masterv.cpp",
-    "Slave/slavev.cpp",
+    "MasterTeleImpedance/master_config.hpp",
+    "SlaveTeleImpedance/slave_config.hpp",
+    "MasterTeleImpedance/master_ti.cpp",
+    "SlaveTeleImpedance/slave_ti.cpp",
     "teleop_logger.py",
 ]
 

@@ -3,7 +3,7 @@
 This branch replaces the VIRTUOSE trigger with the stiffness of the operator's arm, measured by the wearable
 elastography device and computed by the MOSAIC run pipeline of
 [fr3-hand-stiffness-perturbation](https://github.com/sadeghshoushtari/fr3-hand-stiffness-perturbation)
-(`mosaic/session_run.json`). `Master/` and `Slave/` are unchanged; the tele-impedance versions are separate copies.
+(`mosaic/session_run.json`). The baseline controller (`Master/`, `Slave/`) is on branch `main`; this branch holds only the tele-impedance versions.
 
 ```text
   board (biceps, triceps) -> MOSAIC run pipeline -> UDP 4500: Kt (N/m), Kr (Nm/rad) -> SlaveTeleImpedance
@@ -16,7 +16,7 @@ elastography device and computed by the MOSAIC run pipeline of
 
 ## SlaveTeleImpedance
 
-`slave_ti.cpp` is `Slave/slavev.cpp` with four changes:
+`slave_ti.cpp` is the baseline `Slave/slavev.cpp` (branch `main`) with four changes:
 
 1. **Input.** Two doubles on UDP port 4500 from MOSAIC (block `ToSlave`, 5 Hz): translational stiffness (N/m) and
    rotational stiffness (Nm/rad, effective). The rotational gain of the slave's quaternion law is twice the
@@ -58,7 +58,7 @@ energy.
 
 ## MasterTeleImpedance
 
-`master_ti.cpp` is `Master/masterv.cpp` without the trigger: the backward coupling (the spring that lets the FR3 move
+`master_ti.cpp` is the baseline `Master/masterv.cpp` (branch `main`) without the trigger: the backward coupling (the spring that lets the FR3 move
 the VIRTUOSE) follows the translational stiffness the slave applies (feedback[21]) over the same ranges as the
 trigger did: 300..700 N/m -> 5..15 N/m and 0.5..1.5 Nm/rad, with the existing rate limits. Slot 11 of the command
 packet carries the slave's stiffness for the logs; SlaveTeleImpedance does not read it.
@@ -99,7 +99,7 @@ cd SlaveTeleImpedance
 g++ -std=c++17 -O2 -Wall -Wextra slave_ti.cpp examples_common.cpp -I. -I../Common -I/usr/include/eigen3 \
     -o slave_ti -lfranka -pthread
 cd ../MasterTeleImpedance
-cp <baseline>/Master/virtuoseAPI.so .   # the VIRTUOSE library is not in git
+cp <path>/virtuoseAPI.so .   # the VIRTUOSE library is not in git
 g++ -std=c++17 -O2 -Wall -Wextra master_ti.cpp -I. -I../Common -I/usr/include/eigen3 ./virtuoseAPI.so \
     -Wl,-rpath,$(pwd) -o master_ti -pthread
 ```
@@ -160,7 +160,7 @@ simulation. The slave applied the commands continuously (no fallback in 258 s), 
 20-40 Nm/rad; mean applied stiffness per trial: relaxed 318 / 301 N/m, medium 656 / 506 N/m, max 647 / 670 N/m
 (rotation 20.9 / 20.0, 37.8 / 30.3, 37.3 / 38.5 Nm/rad).
 
-Both slaves compile against the libfranka 0.13.3 headers; master_ti against the VIRTUOSE header of `Master/`.
+Both slaves compile against the libfranka 0.13.3 headers; master_ti against the VIRTUOSE header in `MasterTeleImpedance/`.
 
 Hardware test (2026-11-23, `stiffness_sender.py`, contact with foam): the commands reached the slave and the fallback
 worked; in contact the tank paid 2.4 J of stiffness increases and held one at 596 N/m at its minimum. Two reflex

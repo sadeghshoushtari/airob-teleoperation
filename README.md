@@ -120,26 +120,30 @@ airob-teleoperation/
 │   ├── teleop_math.hpp         # shared pose / rotation mathematics
 │   └── teleop_runtime.hpp      # shared runtime helpers
 │
-├── Master/
-│   ├── masterv.cpp             # VIRTUOSE master controller
+├── MasterTeleImpedance/
+│   ├── master_ti.cpp           # VIRTUOSE master controller
 │   ├── master_config.hpp       # master gains, thresholds and limits
-│   ├── master_runtime.hpp      # master runtime helpers
+│   ├── feedback_tank.hpp       # energy tank of the force feedback
+│   ├── buzz_damper.hpp         # damping in the 5-45 Hz band
+│   ├── master_tank_logger.py   # logger of the master tank
 │   └── virtuoseAPI.h           # Haption API header
 │
-├── Slave/
-│   ├── slavev.cpp              # FR3 Cartesian impedance controller
+├── SlaveTeleImpedance/
+│   ├── slave_ti.cpp            # FR3 Cartesian impedance controller, stiffness from MOSAIC
 │   ├── slave_config.hpp        # slave gains, limits and startup pose
-│   ├── slave_control_utils.hpp # slave control helpers
+│   ├── energy_tank.hpp         # energy tank of the variable stiffness
+│   ├── tank_logger.py          # logger of the slave tank
 │   ├── examples_common.cpp
 │   └── examples_common.h
 │
+├── TeleImpedanceTest/          # simulation stubs, tank tests, stiffness_sender.py
+├── TELE_IMPEDANCE.md           # tele-impedance design and tests
 ├── teleop_logger.py            # passive ~100 Hz diagnostic logger
 ├── thesis_data/                # selected experimental data
-├── .vscode/tasks.json          # reproducible build tasks
 └── .gitignore
 ```
 
-The Haption runtime library `virtuoseAPI.so` is intentionally excluded from version control and must be available locally in `Master/`.
+The Haption runtime library `virtuoseAPI.so` is intentionally excluded from version control and must be available locally in `MasterTeleImpedance/`. The baseline controller (`Master/`, `Slave/`) is on branch `main`.
 
 ## Dependencies
 
@@ -155,33 +159,31 @@ The logger itself uses only the Python standard library.
 
 ## Build
 
-VS Code tasks are provided in `.vscode/tasks.json`.
-
-From the repository root, the equivalent command-line builds are:
+From the repository root:
 
 ### Master
 
 ```bash
-cd Master
+cd MasterTeleImpedance
 
 g++ -std=c++17 -O2 -Wall -Wextra \
-    masterv.cpp \
+    master_ti.cpp \
     -I. -I../Common -I/usr/include/eigen3 \
     ./virtuoseAPI.so \
     -Wl,-rpath,"$PWD" \
-    -o masterv \
+    -o master_ti \
     -pthread
 ```
 
 ### Slave
 
 ```bash
-cd Slave
+cd SlaveTeleImpedance
 
 g++ -std=c++17 -O2 -Wall -Wextra \
-    slavev.cpp examples_common.cpp \
+    slave_ti.cpp examples_common.cpp \
     -I. -I../Common -I/usr/include/eigen3 \
-    -o slavev \
+    -o slave_ti \
     -lfranka \
     -pthread
 ```
@@ -193,15 +195,15 @@ The exact hardware startup procedure depends on the local FR3 and VIRTUOSE insta
 ### 1. Start the FR3 slave
 
 ```bash
-cd Slave
-./slavev <FRANKA_IP>
+cd SlaveTeleImpedance
+./slave_ti <FRANKA_IP>
 ```
 
 ### 2. Start the VIRTUOSE master
 
 ```bash
-cd Master
-./masterv
+cd MasterTeleImpedance
+./master_ti
 ```
 
 The master connects to the local VIRTUOSE service using:
