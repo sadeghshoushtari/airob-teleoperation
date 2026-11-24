@@ -94,6 +94,10 @@ teleop logger are unchanged.
 
 ## Build (robot PC)
 
+In VS Code: File > Open Workspace from File > `thesis.code-workspace` (this repository next to
+`fr3-hand-stiffness-perturbation`, `mosaic-2.0`, `mosaic_models` and `mosaic_logs` in the thesis folder);
+Ctrl+Shift+B builds slave_ti, master_ti, perturbation and MOSAIC with our blocks. On the command line:
+
 ```bash
 cd SlaveTeleImpedance
 g++ -std=c++17 -O2 -Wall -Wextra slave_ti.cpp examples_common.cpp -I. -I../Common -I/usr/include/eigen3 \

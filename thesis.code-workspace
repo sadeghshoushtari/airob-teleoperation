@@ -1,0 +1,95 @@
+{
+  "folders": [
+    { "name": "teleop", "path": "." },
+    { "name": "calibration", "path": "../fr3-hand-stiffness-perturbation" },
+    { "name": "mosaic", "path": "../mosaic-2.0" },
+    { "name": "models", "path": "../mosaic_models" },
+    { "name": "mosaic_logs", "path": "../mosaic_logs" }
+  ],
+  "settings": {
+    "C_Cpp.default.compilerPath": "/usr/bin/g++",
+    "C_Cpp.default.cppStandard": "c++17",
+    "C_Cpp.default.includePath": [
+      "${workspaceFolder}/**",
+      "${workspaceFolder:teleop}/Common",
+      "/usr/include/eigen3"
+    ],
+    "files.watcherExclude": {
+      "**/logs/**": true,
+      "**/perturbation_logs/**": true,
+      "**/bin/**": true,
+      "**/obj/**": true
+    },
+    "search.exclude": {
+      "**/logs/**": true,
+      "**/perturbation_logs/**": true,
+      "**/bin/**": true,
+      "**/obj/**": true
+    }
+  },
+  "tasks": {
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "Build slave_ti",
+        "type": "shell",
+        "command": "g++",
+        "args": [
+          "-std=c++17", "-O2", "-Wall", "-Wextra",
+          "slave_ti.cpp", "examples_common.cpp",
+          "-I.", "-I../Common", "-I/usr/include/eigen3",
+          "-o", "slave_ti", "-lfranka", "-pthread"
+        ],
+        "options": { "cwd": "${workspaceFolder:teleop}/SlaveTeleImpedance" },
+        "problemMatcher": ["$gcc"],
+        "group": "build"
+      },
+      {
+        "label": "Build master_ti",
+        "type": "shell",
+        "command": "g++",
+        "args": [
+          "-std=c++17", "-O2", "-Wall", "-Wextra",
+          "master_ti.cpp",
+          "-I.", "-I../Common", "-I/usr/include/eigen3",
+          "./virtuoseAPI.so", "-Wl,-rpath,${workspaceFolder:teleop}/MasterTeleImpedance",
+          "-o", "master_ti", "-pthread"
+        ],
+        "options": { "cwd": "${workspaceFolder:teleop}/MasterTeleImpedance" },
+        "problemMatcher": ["$gcc"],
+        "group": "build"
+      },
+      {
+        "label": "Build perturbation",
+        "type": "shell",
+        "command": "g++",
+        "args": [
+          "-std=c++17", "-O2", "-Wall", "-Wextra",
+          "perturbation.cpp", "-I/usr/include/eigen3",
+          "-o", "perturbation", "-lfranka", "-pthread"
+        ],
+        "options": { "cwd": "${workspaceFolder:calibration}" },
+        "problemMatcher": ["$gcc"],
+        "group": "build"
+      },
+      {
+        "label": "Build MOSAIC with our blocks",
+        "type": "shell",
+        "command": "ln -sf ${workspaceFolder:calibration}/mosaic/blocks/*.cs MOSAIC/Models/Elastography/ && dotnet build MOSAIC.Desktop/MOSAIC.Desktop.csproj -f net10.0",
+        "options": {
+          "cwd": "${workspaceFolder:mosaic}/MOSAIC",
+          "env": { "PATH": "${env:HOME}/.dotnet:${env:PATH}", "DOTNET_ROOT": "${env:HOME}/.dotnet" }
+        },
+        "problemMatcher": ["$msCompile"],
+        "group": "build"
+      },
+      {
+        "label": "Build everything",
+        "dependsOrder": "sequence",
+        "dependsOn": ["Build slave_ti", "Build master_ti", "Build perturbation", "Build MOSAIC with our blocks"],
+        "problemMatcher": [],
+        "group": { "kind": "build", "isDefault": true }
+      }
+    ]
+  }
+}
